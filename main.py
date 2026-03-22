@@ -123,7 +123,7 @@ async def cmd_start(message: types.Message):
     builder.button(text="Получить Карту 🏆")
     builder.button(text="Профиль 👤")
     builder.adjust(1)
-    await message.answer("⚽️ Бот на PostgreSQL запущен!", reply_markup=builder.as_markup(resize_keyboard=True))
+    await message.answer("⚽️ Бот на PostgreSQL запущен успешно!", reply_markup=builder.as_markup(resize_keyboard=True))
 
 async def main():
     init_db()
