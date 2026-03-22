@@ -1,2 +1,2 @@
-worker: python ftclcards.py
+worker: python main.py
 
