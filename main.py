@@ -3,23 +3,24 @@ import random
 import datetime
 import sqlite3
 import os
+import html # Стандартная библиотека для защиты текста
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
-from aiogram.utils.markdown import quote_html # Для защиты от ошибок текста
 
 # --- НАСТРОЙКИ ---
 TOKEN = os.getenv("TOKEN") 
 ADMIN_ID = 1866813859 # <--- ЗАМЕНИ НА СВОЙ ID
 
-# Используем HTML вместо Markdown, он надежнее при наличии спецсимволов
+# Используем HTML, так как он стабильнее при наличии спецсимволов
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
 
 def init_db():
     conn = sqlite3.connect("ftcl_cards.db")
     cursor = conn.cursor()
+    # Создаем таблицы без лишних колонок (без wins)
     cursor.execute('''CREATE TABLE IF NOT EXISTS users 
                       (user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 1000, last_open TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS all_cards 
@@ -38,7 +39,7 @@ def get_random_card(rarity=None):
         elif rand <= 95: rarity = "gold"
         else: rarity = "brilliant"
     
-    # Поиск по rarity_type из твоей базы
+    # Поиск по rarity_type (маленькими буквами, как в твоей базе)
     search_rarity = rarity.lower()
     card = cursor.execute(
         "SELECT * FROM all_cards WHERE LOWER(TRIM(rarity_type)) = ? ORDER BY RANDOM() LIMIT 1", 
@@ -57,7 +58,7 @@ async def cmd_start(message: types.Message):
                  (message.from_user.id, message.from_user.username or "Player"))
     conn.commit()
     conn.close()
-    await message.answer("⚽️ Система FTCL исправлена и запущена!", reply_markup=main_menu())
+    await message.answer("⚽️ FTCL Cards: Исправленная версия запущена!", reply_markup=main_menu())
 
 def main_menu():
     builder = ReplyKeyboardBuilder()
@@ -97,8 +98,8 @@ async def daily_card(message: types.Message):
     conn.close()
     
     emoji = {"bronze": "🥉", "gold": "🥇", "brilliant": "💎"}
-    # Экранируем текст, чтобы избежать ошибок ParseEntity
-    text = (f"<b>🎊 Твоя карта!</b>\n\n👤 {quote_html(card[1])}\n📈 Рейтинг: {card[2]}\n🛡 Клуб: {quote_html(card[4])}\n"
+    # Экранируем спецсимволы через html.escape
+    text = (f"<b>🎊 Твоя карта!</b>\n\n👤 {html.escape(card[1])}\n📈 Рейтинг: {card[2]}\n🛡 Клуб: {html.escape(card[4])}\n"
             f"✨ Тип: {card[5].capitalize()} {emoji.get(card[5].lower(), '')}")
     
     try:
@@ -141,22 +142,25 @@ async def buy_pack(cb: types.CallbackQuery):
 
     await cb.answer()
     status = await cb.message.answer(f"📦 Открываем {rarity} пак...")
-    await asyncio.sleep(1.5)
+    await asyncio.sleep(1.2)
     await status.delete()
 
     emoji = {"bronze": "🥉", "gold": "🥇", "brilliant": "💎"}
-    text = (f"🌟 <b>Пак открыт!</b>\n\n👤 {quote_html(card[1])}\n📈 Рейтинг: {card[2]}\n"
-            f"🛡 Клуб: {quote_html(card[4])}\n✨ Редкость: {card[5].capitalize()} {emoji.get(card[5].lower(), '')}")
+    text = (f"🌟 <b>Пак открыт!</b>\n\n👤 {html.escape(card[1])}\n📈 Рейтинг: {card[2]}\n"
+            f"🛡 Клуб: {html.escape(card[4])}\n✨ Редкость: {card[5].capitalize()} {emoji.get(card[5].lower(), '')}")
 
     try:
-        await cb.message.answer_photo(photo=card[6], caption=text)
+        if card[6] and str(card[6]) != "None":
+            await cb.message.answer_photo(photo=card[6], caption=text)
+        else:
+            await cb.message.answer(text)
     except Exception as e:
         await cb.message.answer(text + f"\n\n⚠️ Ошибка фото: {e}")
 
 @dp.message(F.text == "Профиль 👤")
 async def profile(message: types.Message):
     conn = sqlite3.connect("ftcl_cards.db")
-    # Убрана несуществующая колонка 'wins'
+    # Профиль без колонки wins, чтобы не было ошибки sqlite3.OperationalError
     u = conn.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,)).fetchone()
     c = conn.execute("SELECT COUNT(*) FROM user_cards WHERE user_id=?", (message.from_user.id,)).fetchone()[0]
     conn.close()
@@ -164,7 +168,7 @@ async def profile(message: types.Message):
 
 async def main():
     init_db()
-    # Сброс старых вебхуков, чтобы не было конфликтов
+    # Сброс вебхука при старте решает проблему TelegramConflictError
     await bot.delete_webhook(drop_pending_updates=True) 
     await dp.start_polling(bot)
 
