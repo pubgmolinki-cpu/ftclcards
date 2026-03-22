@@ -11,19 +11,17 @@ from aiogram.client.default import DefaultBotProperties
 
 # --- НАСТРОЙКИ ---
 TOKEN = os.getenv("TOKEN") 
-ADMIN_ID = 1866813859 # <--- ОБЯЗАТЕЛЬНО ПОСТАВЬ СВОЙ ID СЮДА
+ADMIN_ID = 1866813859 # <--- Твой ID (обязательно!)
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
 
-# --- ХЕНДЛЕР ДЛЯ ПОЛУЧЕНИЯ FILE_ID ---
-@dp.message(F.photo)
-async def get_photo_id(message: types.Message):
-    # Берем последний элемент (самое высокое качество)
-    photo_id = message.photo[-1].file_id
-    await message.reply(f"✅ <b>ID твоего фото:</b>\n\n<code>{photo_id}</code>\n\n(Нажми на код, чтобы скопировать)")
-
-# --- ОСТАЛЬНАЯ ЛОГИКА ---
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+def get_rarity_by_rating(rating):
+    if 50 <= rating <= 74: return "bronze"
+    elif 75 <= rating <= 89: return "gold"
+    elif rating >= 90: return "brilliant"
+    return "bronze"
 
 def init_db():
     conn = sqlite3.connect("ftcl_cards.db")
@@ -40,13 +38,56 @@ def init_db():
 def get_random_card(rarity=None):
     conn = sqlite3.connect("ftcl_cards.db")
     cursor = conn.cursor()
-    search_rarity = rarity.lower() if rarity else random.choice(["bronze", "gold", "brilliant"])
+    if not rarity:
+        rand = random.randint(1, 100)
+        if rand <= 75: rarity = "bronze"
+        elif rand <= 95: rarity = "gold"
+        else: rarity = "brilliant"
+    
+    search_rarity = rarity.lower()
     card = cursor.execute(
         "SELECT * FROM all_cards WHERE LOWER(TRIM(rarity_type)) = ? ORDER BY RANDOM() LIMIT 1", 
         (search_rarity,)
     ).fetchone()
     conn.close()
     return card
+
+# --- ОБРАБОТЧИКИ (АДМИН) ---
+
+# Команда для добавления игрока
+@dp.message(Command("add_player"))
+async def add_player(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        # Формат: /add_player Имя, Рейтинг, Звезды, Клуб, file_id
+        data = message.text.replace("/add_player ", "").split(", ")
+        name = data[0]
+        rating = int(data[1])
+        stars = int(data[2])
+        club = data[3]
+        f_id = data[4]
+        
+        rarity = get_rarity_by_rating(rating)
+        
+        conn = sqlite3.connect("ftcl_cards.db")
+        conn.execute("INSERT INTO all_cards (name, rating, stars, club, rarity_type, photo_id) VALUES (?, ?, ?, ?, ?, ?)", 
+                     (name, rating, stars, club, rarity.lower(), f_id))
+        conn.commit()
+        conn.close()
+        
+        await message.answer(f"✅ Игрок <b>{name}</b> успешно добавлен!\nРедкость определена как: <b>{rarity}</b>")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка!\nИспользуй формат:\n<code>/add_player Имя, Рейтинг, Звезды, Клуб, file_id</code>")
+
+# Хендлер для получения ID фото
+@dp.message(F.photo)
+async def get_photo_id(message: types.Message):
+    photo_id = message.photo[-1].file_id
+    await message.reply(f"📸 <b>file_id этого фото:</b>\n\n<code>{photo_id}</code>")
+
+# --- ОБРАБОТЧИКИ (ОСНОВНЫЕ) ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -56,7 +97,7 @@ async def cmd_start(message: types.Message):
                  (message.from_user.id, message.from_user.username or "Player"))
     conn.commit()
     conn.close()
-    await message.answer("⚽️ <b>Система готова!</b>\n\n📸 Отправь мне любое фото, и я пришлю его <b>file_id</b> для базы.", reply_markup=main_menu())
+    await message.answer("⚽️ Система FTCL готова к работе!", reply_markup=main_menu())
 
 def main_menu():
     builder = ReplyKeyboardBuilder()
@@ -73,7 +114,7 @@ async def daily_card(message: types.Message):
     user = cursor.execute("SELECT last_open FROM users WHERE user_id=?", (message.from_user.id,)).fetchone()
     now = datetime.datetime.now()
     
-    # ЛИМИТ 1 МИНУТА ДЛЯ ТЕСТА
+    # Лимит 1 минута для теста
     if user and user[0]:
         last = datetime.datetime.strptime(user[0], '%Y-%m-%d %H:%M:%S')
         if now < last + datetime.timedelta(minutes=1):
@@ -84,7 +125,7 @@ async def daily_card(message: types.Message):
 
     card = get_random_card()
     if not card:
-        await message.answer("⚠️ База пуста!")
+        await message.answer("⚠️ В базе пусто!")
         conn.close()
         return
 
@@ -101,7 +142,7 @@ async def daily_card(message: types.Message):
     try:
         await message.answer_photo(photo=card[6], caption=text)
     except Exception as e:
-        await message.answer(f"{text}\n\n❌ <b>Ошибка фото:</b> {e}\n🆔 ID в базе: <code>{card[6]}</code>")
+        await message.answer(f"{text}\n\n❌ Ошибка фото: {e}\n🆔 ID: <code>{card[6]}</code>")
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_pack(cb: types.CallbackQuery):
@@ -128,8 +169,8 @@ async def buy_pack(cb: types.CallbackQuery):
     conn.close()
 
     await cb.answer()
-    status = await cb.message.answer(f"📦 Открываем {rarity} пак...")
-    await asyncio.sleep(1.2)
+    status = await cb.message.answer(f"📦 Покупаем {rarity} пак...")
+    await asyncio.sleep(1)
     await status.delete()
 
     emoji = {"bronze": "🥉", "gold": "🥇", "brilliant": "💎"}
@@ -139,7 +180,7 @@ async def buy_pack(cb: types.CallbackQuery):
     try:
         await cb.message.answer_photo(photo=card[6], caption=text)
     except Exception as e:
-        await cb.message.answer(f"{text}\n\n❌ <b>Ошибка фото:</b> {e}\n🆔 ID: <code>{card[6]}</code>")
+        await cb.message.answer(f"{text}\n\n❌ Ошибка фото: {e}\n🆔 ID: <code>{card[6]}</code>")
 
 @dp.message(F.text == "Профиль 👤")
 async def profile(message: types.Message):
