@@ -7,21 +7,15 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.utils.markdown import quote_html # Для защиты от ошибок текста
 
 # --- НАСТРОЙКИ ---
 TOKEN = os.getenv("TOKEN") 
-ADMIN_ID = 1866813859 # Твой ID
+ADMIN_ID = 1866813859 # <--- ЗАМЕНИ НА СВОЙ ID
 
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='Markdown'))
+# Используем HTML вместо Markdown, он надежнее при наличии спецсимволов
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
-
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-def get_rarity_by_rating(rating):
-    if 50 <= rating <= 74: return "bronze"
-    elif 75 <= rating <= 89: return "gold"
-    elif rating >= 90: return "brilliant"
-    return "bronze"
 
 def init_db():
     conn = sqlite3.connect("ftcl_cards.db")
@@ -44,6 +38,7 @@ def get_random_card(rarity=None):
         elif rand <= 95: rarity = "gold"
         else: rarity = "brilliant"
     
+    # Поиск по rarity_type из твоей базы
     search_rarity = rarity.lower()
     card = cursor.execute(
         "SELECT * FROM all_cards WHERE LOWER(TRIM(rarity_type)) = ? ORDER BY RANDOM() LIMIT 1", 
@@ -62,7 +57,7 @@ async def cmd_start(message: types.Message):
                  (message.from_user.id, message.from_user.username or "Player"))
     conn.commit()
     conn.close()
-    await message.answer("⚽️ Система FTCL исправлена. Если фото не загрузится, выведу текст!", reply_markup=main_menu())
+    await message.answer("⚽️ Система FTCL исправлена и запущена!", reply_markup=main_menu())
 
 def main_menu():
     builder = ReplyKeyboardBuilder()
@@ -91,10 +86,8 @@ async def daily_card(message: types.Message):
         await message.answer("⚠️ Игроков нет в базе!")
         return
 
-    status_msg = await message.answer("📦 Распаковываем ежедневный бонус...")
-    await asyncio.sleep(1.2)
-    await status_msg.edit_text("✨ Рассматриваем карточку...")
-    await asyncio.sleep(1.2)
+    status_msg = await message.answer("📦 Распаковка...")
+    await asyncio.sleep(1)
     await status_msg.delete()
 
     cursor.execute("UPDATE users SET last_open=?, balance=balance+? WHERE user_id=?", 
@@ -104,25 +97,23 @@ async def daily_card(message: types.Message):
     conn.close()
     
     emoji = {"bronze": "🥉", "gold": "🥇", "brilliant": "💎"}
-    text = (f"🎊 **Твоя карта на сегодня!**\n\n👤 {card[1]}\n📈 Рейтинг: {card[2]}\n🛡 Клуб: {card[4]}\n"
-            f"✨ Тип: {card[5].capitalize()} {emoji.get(card[5].lower(), '')}\n💰 Бонус: +{card[3]} 🌟")
+    # Экранируем текст, чтобы избежать ошибок ParseEntity
+    text = (f"<b>🎊 Твоя карта!</b>\n\n👤 {quote_html(card[1])}\n📈 Рейтинг: {card[2]}\n🛡 Клуб: {quote_html(card[4])}\n"
+            f"✨ Тип: {card[5].capitalize()} {emoji.get(card[5].lower(), '')}")
     
     try:
-        if card[6] and card[6] != "None":
-            await message.answer_photo(photo=card[6], caption=text)
-        else:
-            await message.answer(text)
-    except Exception:
-        await message.answer(text + "\n\n⚠️ (Ошибка загрузки фото, проверьте file_id)")
+        await message.answer_photo(photo=card[6], caption=text)
+    except:
+        await message.answer(text)
 
 @dp.message(F.text == "Магазин 🛒")
 async def shop(message: types.Message):
     kb = InlineKeyboardBuilder()
-    kb.button(text="Bronze Pack (500🌟) 🥉", callback_data="buy_Bronze")
-    kb.button(text="Gold Pack (1500🌟) 🥇", callback_data="buy_Gold")
-    kb.button(text="Brilliant Pack (5000🌟) 💎", callback_data="buy_Brilliant")
+    kb.button(text="Bronze Pack (500🌟)", callback_data="buy_Bronze")
+    kb.button(text="Gold Pack (1500🌟)", callback_data="buy_Gold")
+    kb.button(text="Brilliant Pack (5000🌟)", callback_data="buy_Brilliant")
     kb.adjust(1)
-    await message.answer("🛒 **Магазин паков FTCL**", reply_markup=kb.as_markup())
+    await message.answer("🛒 <b>Магазин FTCL</b>", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_pack(cb: types.CallbackQuery):
@@ -131,14 +122,15 @@ async def buy_pack(cb: types.CallbackQuery):
     
     conn = sqlite3.connect("ftcl_cards.db")
     u = conn.execute("SELECT balance FROM users WHERE user_id=?", (cb.from_user.id,)).fetchone()
+    
     if not u or u[0] < prices[rarity]:
-        await cb.answer("Недостаточно звезд! ❌", show_alert=True)
+        await cb.answer("Недостаточно звезд!", show_alert=True)
         conn.close()
         return
 
     card = get_random_card(rarity)
     if not card:
-        await cb.answer(f"Игроков {rarity} нет в базе!", show_alert=True)
+        await cb.answer(f"Игроков {rarity} нет!", show_alert=True)
         conn.close()
         return
 
@@ -147,55 +139,33 @@ async def buy_pack(cb: types.CallbackQuery):
     conn.commit()
     conn.close()
 
-    await cb.answer() 
-    opening_msg = await cb.message.answer(f"📦 Покупаем {rarity} пак...")
-    await asyncio.sleep(1)
-    await opening_msg.edit_text("🎬 Открываем упаковку...")
-    await asyncio.sleep(1)
-    await opening_msg.delete()
+    await cb.answer()
+    status = await cb.message.answer(f"📦 Открываем {rarity} пак...")
+    await asyncio.sleep(1.5)
+    await status.delete()
 
     emoji = {"bronze": "🥉", "gold": "🥇", "brilliant": "💎"}
-    text = (f"🌟 **Удача на твоей стороне!**\n\n"
-            f"👤 Имя: {card[1]}\n"
-            f"📈 Рейтинг: {card[2]}\n"
-            f"🛡 Клуб: {card[4]}\n"
-            f"✨ Редкость: {card[5].capitalize()} {emoji.get(card[5].lower(), '')}")
+    text = (f"🌟 <b>Пак открыт!</b>\n\n👤 {quote_html(card[1])}\n📈 Рейтинг: {card[2]}\n"
+            f"🛡 Клуб: {quote_html(card[4])}\n✨ Редкость: {card[5].capitalize()} {emoji.get(card[5].lower(), '')}")
 
-    # ЗАЩИТА ОТ ОШИБКИ ФОТО
     try:
-        if card[6] and card[6] != "None": 
-            await cb.message.answer_photo(photo=card[6], caption=text)
-        else: 
-            await cb.message.answer(text)
-    except Exception:
-        await cb.message.answer(text + "\n\n⚠️ (Карточка выдана без фото из-за ошибки file_id)")
+        await cb.message.answer_photo(photo=card[6], caption=text)
+    except Exception as e:
+        await cb.message.answer(text + f"\n\n⚠️ Ошибка фото: {e}")
 
 @dp.message(F.text == "Профиль 👤")
 async def profile(message: types.Message):
     conn = sqlite3.connect("ftcl_cards.db")
+    # Убрана несуществующая колонка 'wins'
     u = conn.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,)).fetchone()
     c = conn.execute("SELECT COUNT(*) FROM user_cards WHERE user_id=?", (message.from_user.id,)).fetchone()[0]
     conn.close()
-    await message.answer(f"👤 **@{message.from_user.username}**\n💰 Баланс: {u[0]}🌟\n🗂 Коллекция: {c} шт.")
-
-@dp.message(Command("add_player"))
-async def add_player(msg: types.Message):
-    if msg.from_user.id != ADMIN_ID: return
-    try:
-        d = msg.text.replace("/add_player ", "").split(", ")
-        name, rating, stars, club, f_id = d[0], int(d[1]), int(d[2]), d[3], d[4]
-        rarity = get_rarity_by_rating(rating)
-        conn = sqlite3.connect("ftcl_cards.db")
-        conn.execute("INSERT INTO all_cards (name, rating, stars, club, rarity_type, photo_id) VALUES (?, ?, ?, ?, ?, ?)", 
-                     (name, rating, stars, club, rarity.lower(), f_id))
-        conn.commit()
-        conn.close()
-        await msg.answer(f"✅ Добавлен {name} ({rarity})")
-    except:
-        await msg.answer("Формат: `Имя, Рейтинг, Звезды, Клуб, file_id`")
+    await message.answer(f"👤 <b>@{message.from_user.username}</b>\n💰 Баланс: {u[0]}🌟\n🗂 Коллекция: {c} шт.")
 
 async def main():
     init_db()
+    # Сброс старых вебхуков, чтобы не было конфликтов
+    await bot.delete_webhook(drop_pending_updates=True) 
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
