@@ -23,7 +23,7 @@ def get_rarity_by_rating(rating):
         return "Gold"
     elif rating >= 90:
         return "Brilliant"
-    return "Bronze" # По умолчанию
+    return "Bronze"
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
@@ -38,6 +38,23 @@ def init_db():
     conn.commit()
     conn.close()
 
+# --- ФУНКЦИЯ ИСПРАВЛЕНИЯ СТАРЫХ ЗАПИСЕЙ ---
+def fix_old_cards():
+    conn = sqlite3.connect("ftcl_cards.db")
+    cursor = conn.cursor()
+    # Ищем карты, где rarity_type пустой или NULL
+    old_players = cursor.execute("SELECT id, rating FROM all_cards WHERE rarity_type IS NULL OR rarity_type = ''").fetchall()
+    
+    for p_id, rating in old_players:
+        new_rarity = get_rarity_by_rating(rating)
+        cursor.execute("UPDATE all_cards SET rarity_type = ? WHERE id = ?", (new_rarity, p_id))
+    
+    conn.commit()
+    count = len(old_players)
+    conn.close()
+    if count > 0:
+        print(f"🛠 Исправлено старых игроков: {count}")
+
 def main_menu():
     builder = ReplyKeyboardBuilder()
     builder.button(text="Получить Карту 🏆")
@@ -46,11 +63,9 @@ def main_menu():
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-# --- ЛОГИКА ВЫБОРА КАРТЫ ПО ШАНСАМ ---
 def get_random_card(rarity=None):
     conn = sqlite3.connect("ftcl_cards.db")
     cursor = conn.cursor()
-    
     if not rarity:
         rand = random.randint(1, 100)
         if rand <= 75: rarity = "Bronze"
@@ -71,7 +86,7 @@ async def cmd_start(message: types.Message):
                  (message.from_user.id, message.from_user.username or "Player"))
     conn.commit()
     conn.close()
-    await message.answer("⚽️ Система конвертации рейтинга активирована!", reply_markup=main_menu())
+    await message.answer("⚽️ Бот запущен. Старые карты обновлены и готовы к выдаче!", reply_markup=main_menu())
 
 @dp.message(F.text == "Получить Карту 🏆")
 async def daily_card(message: types.Message):
@@ -84,12 +99,12 @@ async def daily_card(message: types.Message):
         last = datetime.datetime.strptime(user[0], '%Y-%m-%d %H:%M:%S')
         if now < last + datetime.timedelta(hours=24):
             rem = (last + datetime.timedelta(hours=24)) - now
-            await message.answer(f"⏳ Карта будет доступна через {rem.seconds // 3600}ч.")
+            await message.answer(f"⏳ Жди еще {rem.seconds // 3600}ч. {(rem.seconds // 60) % 60}мин.")
             return
 
     card = get_random_card()
     if not card:
-        await message.answer("⚠️ В базе нет игроков! Попроси админа добавить их.")
+        await message.answer("⚠️ Игроки не найдены. Добавь их через /add_player")
         return
 
     cursor.execute("UPDATE users SET last_open=?, balance=balance+? WHERE user_id=?", 
@@ -125,21 +140,20 @@ async def buy_pack(cb: types.CallbackQuery):
     
     conn = sqlite3.connect("ftcl_cards.db")
     u = conn.execute("SELECT balance FROM users WHERE user_id=?", (cb.from_user.id,)).fetchone()
-    
     if u[0] < prices[rarity]:
         await cb.answer("Недостаточно звезд!", show_alert=True)
         return
 
     card = get_random_card(rarity)
     if not card:
-        await cb.answer("В базе нет игроков такого типа!", show_alert=True)
+        await cb.answer("В этой категории пока нет игроков!", show_alert=True)
         return
 
     conn.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (prices[rarity], cb.from_user.id))
     conn.execute("INSERT INTO user_cards (user_id, card_id) VALUES (?, ?)", (cb.from_user.id, card[0]))
     conn.commit()
     conn.close()
-    await cb.message.answer(f"📦 Ты выбил {rarity} карту: **{card[1]}**!")
+    await cb.message.answer(f"📦 Выпал {rarity} игрок: **{card[1]}**!")
     await cb.answer()
 
 @dp.message(F.text == "Профиль 👤")
@@ -154,24 +168,21 @@ async def profile(message: types.Message):
 async def add_player(msg: types.Message):
     if msg.from_user.id != ADMIN_ID: return
     try:
-        # Формат: Имя, Рейтинг, Звезды, Клуб, file_id
         d = msg.text.replace("/add_player ", "").split(", ")
         name, rating, stars, club, f_id = d[0], int(d[1]), int(d[2]), d[3], d[4]
-        
-        # АВТО-КОНВЕРТАЦИЯ
         rarity = get_rarity_by_rating(rating)
-        
         conn = sqlite3.connect("ftcl_cards.db")
         conn.execute("INSERT INTO all_cards (name, rating, stars, club, rarity_type, photo_id) VALUES (?, ?, ?, ?, ?, ?)", 
                      (name, rating, stars, club, rarity, f_id))
         conn.commit()
         conn.close()
-        await msg.answer(f"✅ Добавлен {name}!\nТип: {rarity} (определено по рейту {rating})")
+        await msg.answer(f"✅ Добавлен {name} ({rarity})")
     except:
-        await msg.answer("Ошибка! Формат:\n`Имя, Рейтинг, Звезды, Клуб, file_id`")
+        await msg.answer("Формат: `Имя, Рейтинг, Звезды, Клуб, file_id`")
 
 async def main():
     init_db()
+    fix_old_cards() # <--- Запуск исправителя
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
