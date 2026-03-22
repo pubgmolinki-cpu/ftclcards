@@ -11,10 +11,19 @@ from aiogram.client.default import DefaultBotProperties
 
 # --- НАСТРОЙКИ ---
 TOKEN = os.getenv("TOKEN") 
-ADMIN_ID = 1866813859 # <--- Твой ID
+ADMIN_ID = 1866813859 # <--- ОБЯЗАТЕЛЬНО ПОСТАВЬ СВОЙ ID СЮДА
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
+
+# --- ХЕНДЛЕР ДЛЯ ПОЛУЧЕНИЯ FILE_ID ---
+@dp.message(F.photo)
+async def get_photo_id(message: types.Message):
+    # Берем последний элемент (самое высокое качество)
+    photo_id = message.photo[-1].file_id
+    await message.reply(f"✅ <b>ID твоего фото:</b>\n\n<code>{photo_id}</code>\n\n(Нажми на код, чтобы скопировать)")
+
+# --- ОСТАЛЬНАЯ ЛОГИКА ---
 
 def init_db():
     conn = sqlite3.connect("ftcl_cards.db")
@@ -31,21 +40,13 @@ def init_db():
 def get_random_card(rarity=None):
     conn = sqlite3.connect("ftcl_cards.db")
     cursor = conn.cursor()
-    if not rarity:
-        rand = random.randint(1, 100)
-        if rand <= 75: rarity = "bronze"
-        elif rand <= 95: rarity = "gold"
-        else: rarity = "brilliant"
-    
-    search_rarity = rarity.lower()
+    search_rarity = rarity.lower() if rarity else random.choice(["bronze", "gold", "brilliant"])
     card = cursor.execute(
         "SELECT * FROM all_cards WHERE LOWER(TRIM(rarity_type)) = ? ORDER BY RANDOM() LIMIT 1", 
         (search_rarity,)
     ).fetchone()
     conn.close()
     return card
-
-# --- ОБРАБОТЧИКИ ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -55,7 +56,7 @@ async def cmd_start(message: types.Message):
                  (message.from_user.id, message.from_user.username or "Player"))
     conn.commit()
     conn.close()
-    await message.answer("⚽️ Режим теста (1 мин) активирован!", reply_markup=main_menu())
+    await message.answer("⚽️ <b>Система готова!</b>\n\n📸 Отправь мне любое фото, и я пришлю его <b>file_id</b> для базы.", reply_markup=main_menu())
 
 def main_menu():
     builder = ReplyKeyboardBuilder()
@@ -72,18 +73,18 @@ async def daily_card(message: types.Message):
     user = cursor.execute("SELECT last_open FROM users WHERE user_id=?", (message.from_user.id,)).fetchone()
     now = datetime.datetime.now()
     
-    # ТЕСТОВЫЙ ЛИМИТ: 1 МИНУТА
+    # ЛИМИТ 1 МИНУТА ДЛЯ ТЕСТА
     if user and user[0]:
         last = datetime.datetime.strptime(user[0], '%Y-%m-%d %H:%M:%S')
         if now < last + datetime.timedelta(minutes=1):
             rem = (last + datetime.timedelta(minutes=1)) - now
-            await message.answer(f"⏳ Тестовый лимит! Жди {rem.seconds} сек.")
+            await message.answer(f"⏳ Подожди {rem.seconds} сек.")
             conn.close()
             return
 
     card = get_random_card()
     if not card:
-        await message.answer("⚠️ Игроков нет в базе!")
+        await message.answer("⚠️ База пуста!")
         conn.close()
         return
 
@@ -98,21 +99,9 @@ async def daily_card(message: types.Message):
             f"✨ Тип: {card[5].capitalize()} {emoji.get(card[5].lower(), '')}")
     
     try:
-        if card[6] and str(card[6]) != "None":
-            await message.answer_photo(photo=card[6], caption=text)
-        else:
-            await message.answer(text + "\n\n⚠️ В базе нет ID фото.")
+        await message.answer_photo(photo=card[6], caption=text)
     except Exception as e:
-        await message.answer(text + f"\n\n❌ Ошибка Telegram: {e}\n🆔 file_id: <code>{card[6]}</code>")
-
-@dp.message(F.text == "Магазин 🛒")
-async def shop(message: types.Message):
-    kb = InlineKeyboardBuilder()
-    kb.button(text="Bronze Pack (500🌟)", callback_data="buy_Bronze")
-    kb.button(text="Gold Pack (1500🌟)", callback_data="buy_Gold")
-    kb.button(text="Brilliant Pack (5000🌟)", callback_data="buy_Brilliant")
-    kb.adjust(1)
-    await message.answer("🛒 <b>Магазин FTCL</b>", reply_markup=kb.as_markup())
+        await message.answer(f"{text}\n\n❌ <b>Ошибка фото:</b> {e}\n🆔 ID в базе: <code>{card[6]}</code>")
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_pack(cb: types.CallbackQuery):
@@ -139,17 +128,18 @@ async def buy_pack(cb: types.CallbackQuery):
     conn.close()
 
     await cb.answer()
+    status = await cb.message.answer(f"📦 Открываем {rarity} пак...")
+    await asyncio.sleep(1.2)
+    await status.delete()
+
     emoji = {"bronze": "🥉", "gold": "🥇", "brilliant": "💎"}
     text = (f"🌟 <b>Пак открыт!</b>\n\n👤 {html.escape(card[1])}\n📈 Рейтинг: {card[2]}\n"
             f"🛡 Клуб: {html.escape(card[4])}\n✨ Редкость: {card[5].capitalize()} {emoji.get(card[5].lower(), '')}")
 
     try:
-        if card[6] and str(card[6]) != "None":
-            await cb.message.answer_photo(photo=card[6], caption=text)
-        else:
-            await cb.message.answer(text + "\n\n⚠️ В базе нет ID фото.")
+        await cb.message.answer_photo(photo=card[6], caption=text)
     except Exception as e:
-        await cb.message.answer(text + f"\n\n❌ Ошибка Telegram: {e}\n🆔 file_id: <code>{card[6]}</code>")
+        await cb.message.answer(f"{text}\n\n❌ <b>Ошибка фото:</b> {e}\n🆔 ID: <code>{card[6]}</code>")
 
 @dp.message(F.text == "Профиль 👤")
 async def profile(message: types.Message):
