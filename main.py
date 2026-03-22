@@ -9,12 +9,12 @@ from aiogram.client.default import DefaultBotProperties
 
 # --- НАСТРОЙКИ ---
 TOKEN = os.getenv("TOKEN") 
-ADMIN_ID = 1866813859 # <--- ТВОЙ ID (ОБЯЗАТЕЛЬНО!)
+ADMIN_ID = 1866813859 # <--- ЗАМЕНИ НА СВОЙ ID!
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
 
-# Временная память для фото
+# Временный буфер для фото
 temp_photo_buffer = {}
 
 def init_db():
@@ -25,18 +25,18 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS all_cards 
                       (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, rating INTEGER, 
                        position TEXT, rarity TEXT, rarity_type TEXT, club TEXT, photo_id TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS user_cards (user_id INTEGER, card_id INTEGER)''')
     conn.commit()
     conn.close()
 
-# --- АДМИН-ФУНКЦИИ ---
+# --- АДМИН-ЧАСТЬ ---
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     if message.from_user.id == ADMIN_ID:
+        # Берем самое качественное фото
         photo = max(message.photo, key=lambda p: p.file_size)
         temp_photo_buffer[message.from_user.id] = photo.file_id
-        await message.reply("📸 <b>Фото сохранено!</b>\nВведи команду:\n<code>/add_player Имя, Рейтинг, Позиция, Клуб</code>")
+        await message.reply("📸 <b>Фото запомнил!</b>\nТеперь введи данные игрока:\n<code>/add_player Имя, Рейтинг, Позиция, Клуб</code>")
 
 @dp.message(Command("add_player"))
 async def add_player(message: types.Message):
@@ -44,14 +44,17 @@ async def add_player(message: types.Message):
     
     photo_id = temp_photo_buffer.get(message.from_user.id)
     if not photo_id:
-        return await message.reply("❌ Сначала скинь фото!")
+        return await message.reply("❌ Сначала отправь фото!")
 
     try:
-        # Парсим: Имя, Рейтинг, Позиция, Клуб
-        data = message.text.replace("/add_player ", "").split(", ")
-        name, rating, pos, club = data[0].strip(), int(data[1].strip()), data[2].strip(), data[3].strip()
+        # Разделяем ввод
+        parts = message.text.replace("/add_player ", "").split(", ")
+        name = parts[0].strip()
+        rating = int(parts[1].strip())
+        pos = parts[2].strip()
+        club = parts[3].strip()
         
-        # Определяем редкость
+        # Редкость
         if rating >= 90: r_type, r_label = "brilliant", "Brilliant 💎"
         elif rating >= 75: r_type, r_label = "gold", "Gold 🥇"
         else: r_type, r_label = "bronze", "Bronze 🥉"
@@ -63,44 +66,52 @@ async def add_player(message: types.Message):
         conn.close()
         
         del temp_photo_buffer[message.from_user.id]
-        await message.answer(f"✅ Игрок <b>{name}</b> успешно добавлен!")
+        await message.answer(f"✅ Игрок <b>{name}</b> добавлен!")
     except Exception as e:
         await message.answer("❌ Ошибка! Формат: <code>Имя, Рейтинг, Позиция, Клуб</code>")
 
-# --- ИГРОВАЯ ЛОГИКА ---
+# --- ИГРОВАЯ ЧАСТЬ ---
 
 @dp.message((F.text == "Получить Карту 🏆") | (F.text.lower() == "фтклкарта"))
 async def give_card(message: types.Message):
     conn = sqlite3.connect("ftcl_cards.db")
-    # Берем случайную карту
-    card = conn.execute("SELECT * FROM all_cards ORDER BY RANDOM() LIMIT 1").fetchone()
+    # Настройка, чтобы получать данные в виде словаря (по именам колонок)
+    conn.row_factory = sqlite3.Row 
+    cursor = conn.cursor()
+    
+    card = cursor.execute("SELECT * FROM all_cards ORDER BY RANDOM() LIMIT 1").fetchone()
     conn.close()
     
     if not card: 
         return await message.answer("⚠️ База пуста.")
 
-    # СТРОГОЕ СООТВЕТСТВИЕ ИНДЕКСАМ ТВОЕЙ БАЗЫ:
-    # 1:name, 2:rating, 3:position, 4:rarity, 6:club, 7:photo_id
+    # Теперь берем данные ПО ИМЕНАМ СТОЛБЦОВ, а не по цифрам!
+    c_name = html.escape(str(card["name"]))
+    c_rating = card["rating"]
+    c_pos = html.escape(str(card["position"]))
+    c_club = html.escape(str(card["club"]))
+    c_rarity = card["rarity"]
+    c_photo = str(card["photo_id"]).strip() # Убираем лишние пробелы
+
     text = (f"🎊 <b>Твоя карта!</b>\n\n"
-            f"👤 {html.escape(str(card[1]))}\n"
-            f"📈 Рейтинг: {card[2]}\n"
-            f"🏃 Позиция: {html.escape(str(card[3]))}\n"
-            f"🛡 Клуб: {html.escape(str(card[6]))}\n"
-            f"✨ {card[4]}")
+            f"👤 {c_name}\n"
+            f"📈 Рейтинг: {c_rating}\n"
+            f"🏃 Позиция: {c_pos}\n"
+            f"🛡 Клуб: {c_club}\n"
+            f"✨ {c_rarity}")
     
     try:
-        # Отправляем фото из колонки №7
-        await message.reply_photo(photo=card[7], caption=text)
+        # Отправляем именно по c_photo
+        await message.reply_photo(photo=c_photo, caption=text)
     except Exception as e:
-        await message.reply(f"{text}\n\n❌ Ошибка фото: <code>{e}</code>")
+        await message.reply(f"{text}\n\n❌ Ошибка Telegram: <code>{e}</code>")
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     init_db()
     builder = ReplyKeyboardBuilder()
     builder.button(text="Получить Карту 🏆")
-    builder.adjust(1)
-    await message.answer("⚽️ Бот FTCL запущен!", reply_markup=builder.as_markup(resize_keyboard=True))
+    await message.answer("⚽️ Бот запущен!", reply_markup=builder.as_markup(resize_keyboard=True))
 
 async def main():
     init_db()
