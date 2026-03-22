@@ -6,13 +6,13 @@ import html
 import random
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
-from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 
 # --- КОНФИГУРАЦИЯ ---
 TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_ID = 1866813859  # <--- ОБЯЗАТЕЛЬНО ПОСТАВЬ СВОЙ ID
+ADMIN_ID = 1866813859  # <--- ПОСТАВЬ СВОЙ ID
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
@@ -25,7 +25,7 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # BIGINT важен для Telegram ID
+    # BIGINT для ID, чтобы не было ошибок
     cursor.execute('''CREATE TABLE IF NOT EXISTS users 
                       (user_id BIGINT PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 1000)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS all_cards 
@@ -37,24 +37,30 @@ def init_db():
     cursor.close()
     conn.close()
 
-def get_random_card_logic(rarity_type=None):
+def get_stars_by_rating(rating):
+    """Логика начисления звезд по твоему списку"""
+    if rating >= 90: return 2500
+    if rating >= 85: return 2000
+    if rating >= 80: return 1750
+    if rating >= 75: return 1500
+    if rating >= 70: return 1250
+    if rating >= 60: return 1000
+    if rating >= 55: return 500
+    return 250  # Для рейтинга 50 и ниже
+
+def get_random_card_logic():
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
     try:
-        if rarity_type:
-            search = rarity_type.lower().strip()
-        else:
-            rand = random.randint(1, 100)
-            if rand <= 70: search = "bronze"
-            elif rand <= 95: search = "gold"
-            else: search = "brilliant"
+        rand = random.randint(1, 100)
+        if rand <= 70: search = "bronze"
+        elif rand <= 95: search = "gold"
+        else: search = "brilliant"
         
-        # Поиск с защитой от регистра
         cursor.execute("SELECT * FROM all_cards WHERE LOWER(rarity_type) = LOWER(%s) ORDER BY RANDOM() LIMIT 1", (search,))
         card = cursor.fetchone()
         
-        # Если нужной редкости нет, берем ЛЮБУЮ карту, чтобы не писать "База пуста"
-        if not card:
+        if not card: # Если нужной редкости нет, берем любого
             cursor.execute("SELECT * FROM all_cards ORDER BY RANDOM() LIMIT 1")
             card = cursor.fetchone()
         return card
@@ -62,14 +68,14 @@ def get_random_card_logic(rarity_type=None):
         cursor.close()
         conn.close()
 
-# --- ХЕНДЛЕРЫ АДМИНА ---
+# --- АДМИН-ФУНКЦИИ ---
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     if message.from_user.id == ADMIN_ID:
         photo = max(message.photo, key=lambda p: p.file_size)
         temp_photo_buffer[message.from_user.id] = photo.file_id
-        await message.reply("📸 <b>Фото принято!</b>\nТеперь введи данные игрока:\n<code>/add_player Имя, Рейтинг, Позиция, Клуб</code>")
+        await message.reply("📸 <b>Фото сохранено!</b>\nВведи: <code>/add_player Имя, Рейтинг, Позиция, Клуб</code>")
 
 @dp.message(Command("add_player"))
 async def add_player(message: types.Message):
@@ -93,12 +99,12 @@ async def add_player(message: types.Message):
         cursor.close()
         conn.close()
         
-        await message.answer(f"✅ Игрок <b>{name}</b> сохранен в PostgreSQL!")
+        await message.answer(f"✅ Игрок <b>{name}</b> ({rating}) добавлен!")
         del temp_photo_buffer[message.from_user.id]
     except:
         await message.answer("❌ Ошибка! Формат: <code>Имя, Рейтинг, Позиция, Клуб</code>")
 
-# --- ИГРОВЫЕ ХЕНДЛЕРЫ ---
+# --- ИГРОВЫЕ ФУНКЦИИ ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -115,35 +121,61 @@ async def cmd_start(message: types.Message):
     kb.button(text="Получить Карту 🏆")
     kb.button(text="Профиль 👤")
     kb.adjust(2)
-    await message.answer("⚽️ Бот FTCL на PostgreSQL запущен!", reply_markup=kb.as_markup(resize_keyboard=True))
+    await message.answer("⚽️ Добро пожаловать в FTCL Cards!", reply_markup=kb.as_markup(resize_keyboard=True))
 
 @dp.message(F.text == "Получить Карту 🏆")
 async def give_card(message: types.Message):
     card = get_random_card_logic()
     if not card: 
-        return await message.answer("⚠️ База пуста. Добавь игроков через /add_player!")
+        return await message.answer("⚠️ В базе пока нет игроков.")
+
+    # Вычисляем награду
+    reward = get_stars_by_rating(card['rating'])
+    
+    # Сохраняем в базу: начисление звезд + запись в коллекцию
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # 1. Обновляем баланс
+        cursor.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (reward, message.from_user.id))
+        # 2. Добавляем карту в коллекцию
+        cursor.execute("INSERT INTO user_cards (user_id, card_id) VALUES (%s, %s)", (message.from_user.id, card['id']))
+        conn.commit()
+    except Exception as e:
+        print(f"Ошибка сохранения: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 
     cap = (f"🎊 <b>Твоя карта!</b>\n\n👤 {html.escape(card['name'])}\n📈 Рейтинг: {card['rating']}\n"
-           f"🏃 Позиция: {html.escape(card['position'])}\n🛡 Клуб: {html.escape(card['club'])}\n✨ {card['rarity']}")
+           f"🛡 Клуб: {html.escape(card['club'])}\n✨ {card['rarity']}\n\n"
+           f"💰 Награда: <b>+{reward}</b> ⭐")
     
     try:
         await message.reply_photo(photo=card['photo_id'], caption=cap)
-    except Exception as e:
-        await message.reply(f"{cap}\n\n❌ Ошибка фото: {e}")
+    except:
+        await message.reply(f"{cap}\n\n❌ Ошибка загрузки фото")
 
 @dp.message(F.text == "Профиль 👤")
 async def profile(message: types.Message):
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
+    
+    # Получаем данные пользователя
     cursor.execute("SELECT balance FROM users WHERE user_id=%s", (message.from_user.id,))
     u = cursor.fetchone()
+    
+    # Считаем количество карт в коллекции
     cursor.execute("SELECT COUNT(*) FROM user_cards WHERE user_id=%s", (message.from_user.id,))
-    c = cursor.fetchone()[0]
+    c_count = cursor.fetchone()[0]
+    
     cursor.close()
     conn.close()
     
     balance = u['balance'] if u else 0
-    await message.reply(f"👤 <b>Профиль @{message.from_user.username}</b>\n\n💰 Баланс: {balance} 🌟\n🗂 Коллекция: {c} шт.")
+    await message.reply(f"👤 <b>Профиль @{message.from_user.username}</b>\n\n"
+                        f"💰 Баланс: <b>{balance}</b> ⭐\n"
+                        f"🗂 В коллекции: <b>{c_count}</b> шт.")
 
 async def main():
     init_db()
