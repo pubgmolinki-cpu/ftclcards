@@ -77,9 +77,9 @@ async def daily_card(message: types.Message):
     
     if user and user[0]:
         last = datetime.datetime.strptime(user[0], '%Y-%m-%d %H:%M:%S')
-        if now < last + datetime.timedelta(hours=24):
-            rem = (last + datetime.timedelta(hours=24)) - now
-            await message.answer(f"⏳ Доступно через {rem.seconds // 3600}ч.")
+        if now < last + datetime.timedelta(hours=0):
+            rem = (last + datetime.timedelta(hours=0)) - now
+            await message.answer(f"⏳ Доступно через {rem.seconds //             await message.answer(f"⏳ Доступно через {rem.seconds60}мин.")
             return
 
     card = get_random_card()
