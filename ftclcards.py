@@ -2,17 +2,19 @@ import asyncio
 import random
 import datetime
 import sqlite3
+import os
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.client.default import DefaultBotProperties
 
 # --- НАСТРОЙКИ ---
-TOKEN = "8745143259:AAGndBWIy_9G8C4GjovoRA700trkveXNGNU"
+TOKEN = ("8745143259:AAGndBWIy_9G8C4GjovoRA700trkveXNGNU)" # Берем токен из переменных Railway
 ADMIN_ID = 1866813859 # Твой ID
 
-bot = Bot(token=TOKEN)
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='Markdown'))
 dp = Dispatcher()
 
 class GameState(StatesGroup):
@@ -59,13 +61,13 @@ async def cmd_start(message: types.Message):
                    (message.from_user.id, message.from_user.username or "Player"))
     conn.commit()
     conn.close()
-    await message.answer("Добро пожаловать в FTCL Cards! 🏆", reply_markup=main_menu())
+    await message.answer("Футбольная империя FTCL приветствует тебя! ⚽️", reply_markup=main_menu())
 
 @dp.message(F.photo)
 async def get_photo_id(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     photo_id = message.photo[-1].file_id
-    await message.reply(f"🆔 **ID Фотографии:**\n\n`{photo_id}`", parse_mode="Markdown")
+    await message.reply(f"🆔 **ID Фотографии:**\n\n`{photo_id}`")
 
 # --- ПРОФИЛЬ ---
 @dp.message(F.text == "Профиль 👤")
@@ -75,25 +77,23 @@ async def show_profile(message: types.Message):
     user = cursor.execute("SELECT balance FROM users WHERE user_id = ?", (message.from_user.id,)).fetchone()
     
     if not user:
-        await message.answer("Сначала напиши /start")
+        await message.answer("Нажми /start, чтобы зарегистрироваться!")
         return
 
-    cards = cursor.execute("""SELECT all_cards.name, all_cards.rating, all_cards.position, all_cards.rarity 
+    cards = cursor.execute("""SELECT all_cards.name, all_cards.rating, all_cards.position 
                               FROM user_cards 
                               JOIN all_cards ON user_cards.card_id = all_cards.id 
                               WHERE user_id = ?""", (message.from_user.id,)).fetchall()
     
-    card_list = "\n".join([f"• {c[0]} [{c[1]}] - {c[2]} ({c[3]})" for c in cards]) if cards else "Коллекция пуста"
-    avg_rating = cursor.execute("SELECT AVG(rating) FROM user_cards JOIN all_cards ON user_cards.card_id = all_cards.id WHERE user_id = ?", (message.from_user.id,)).fetchone()[0] or 0
+    card_list = "\n".join([f"• {c[0]} [{c[1]}] - {c[2]}" for c in cards]) if cards else "У тебя пока нет игроков."
     
     text = (f"👤 **Игрок**: @{message.from_user.username}\n"
-            f"💰 **Баланс**: {user[0]} 🌟\n"
-            f"📊 **Ср. рейтинг**: {round(avg_rating, 1)}\n\n"
-            f"🗂 **Твои карты**:\n{card_list}")
-    await message.answer(text, parse_mode="Markdown")
+            f"💰 **Баланс**: {user[0]} 🌟\n\n"
+            f"🗂 **Твоя команда**:\n{card_list}")
+    await message.answer(text)
     conn.close()
 
-# --- ПОЛУЧИТЬ КАРТУ ---
+# --- ПОЛУЧИТЬ КАРТУ (2 МИНУТЫ) ---
 @dp.message(F.text == "Получить Карту 🏆")
 async def daily_card(message: types.Message):
     conn = sqlite3.connect("ftcl_cards.db")
@@ -110,26 +110,24 @@ async def daily_card(message: types.Message):
 
     now = datetime.datetime.now()
 
+    # ПРОВЕРКА: 2 МИНУТЫ
     if last_open_val:
         last_time = datetime.datetime.strptime(last_open_val, '%Y-%m-%d %H:%M:%S')
-        if now < last_time + datetime.timedelta(hours=0):
-            wait = (last_time + datetime.timedelta(hours=0)) - now
-            await message.answer(f"⏳ Рано! Жди еще {wait.seconds // 1}ч. {(wait.seconds // 1) % 1}мин.")
+        if now < last_time + datetime.timedelta(minutes=2):
+            wait = (last_time + datetime.timedelta(minutes=2)) - now
+            await message.answer(f"⏳ Нужно подождать еще {wait.seconds} сек.")
             conn.close()
             return
 
     rand = random.randint(1, 100)
-    if rand <= 65: r_type = "bronze"
-    elif rand <= 95: r_type = "gold"
-    else: r_type = "brilliant"
+    r_type = "bronze" if rand <= 65 else "gold" if rand <= 95 else "brilliant"
 
     card = cursor.execute("SELECT id, name, rating, stars, club, division, position, rarity, photo_id FROM all_cards WHERE rarity_type = ? ORDER BY RANDOM() LIMIT 1", (r_type,)).fetchone()
-    
     if not card:
         card = cursor.execute("SELECT id, name, rating, stars, club, division, position, rarity, photo_id FROM all_cards ORDER BY RANDOM() LIMIT 1").fetchone()
 
     if not card:
-        await message.answer("⚠️ В базе нет игроков! Админ, добавь их.")
+        await message.answer("⚠️ В базе нет игроков! Добавь их через /add_player")
         conn.close()
         return
 
@@ -138,16 +136,12 @@ async def daily_card(message: types.Message):
     cursor.execute("INSERT INTO user_cards (user_id, card_id) VALUES (?, ?)", (message.from_user.id, card[0]))
     conn.commit()
 
-    caption = (f"🎊 **НОВАЯ КАРТА!**\n\n👤 **{card[1]}** | {card[7]}\n🏃 Позиция: {card[6]}\n📈 Рейтинг: {card[2]}\n🛡 Клуб: {card[4]}\n🏆 Дивизион: {card[5]}\n🌟 Награда: +{card[3]}")
+    caption = (f"🎊 **НОВЫЙ ИГРОК!**\n\n👤 **{card[1]}** | {card[7]}\n🏃 Позиция: {card[6]}\n📈 Рейтинг: {card[2]}\n🛡 Клуб: {card[4]}\n🌟 Награда: +{card[3]} звезд")
     
-    try:
-        if card[8] and card[8] != "None":
-            await message.answer_photo(photo=card[8], caption=caption, parse_mode="Markdown")
-        else:
-            await message.answer(caption, parse_mode="Markdown")
-    except Exception as e:
-        await message.answer(caption + f"\n\n*(Ошибка фото)*", parse_mode="Markdown")
-    
+    if card[8] and card[8] != "None":
+        await message.answer_photo(photo=card[8], caption=caption)
+    else:
+        await message.answer(caption)
     conn.close()
 
 # --- МИНИ-ИГРЫ ---
@@ -155,11 +149,11 @@ async def daily_card(message: types.Message):
 async def games_menu(message: types.Message):
     kb = InlineKeyboardBuilder()
     kb.button(text="Чет/Нечет 🎲", callback_data="game_even_odd")
-    await message.answer("Выбери игру:", reply_markup=kb.as_markup())
+    await message.answer("Испытай удачу и заработай звезды:", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data == "game_even_odd")
 async def start_dice(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("Введите ставку:")
+    await callback.message.answer("Введите сумму ставки:")
     await state.set_state(GameState.waiting_for_bet)
 
 @dp.message(GameState.waiting_for_bet)
@@ -171,9 +165,10 @@ async def process_bet(message: types.Message, state: FSMContext):
     conn = sqlite3.connect("ftcl_cards.db")
     user = conn.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,)).fetchone()
     if not user or bet > user[0] or bet <= 0:
-        await message.answer("Мало звезд!")
+        await message.answer("Недостаточно звезд!")
         conn.close()
         return
+    
     kb = InlineKeyboardBuilder()
     kb.button(text="Чётное", callback_data=f"dice_even_{bet}")
     kb.button(text="Нечётное", callback_data=f"dice_odd_{bet}")
@@ -208,7 +203,7 @@ async def shop(message: types.Message):
     kb.button(text="Gold Pack (1500🌟)", callback_data="buy_gold")
     kb.button(text="Brilliant Pack (5000🌟)", callback_data="buy_brilliant")
     kb.adjust(1)
-    await message.answer("🛒 Магазин паков:\n\n🥉 Bronze (50-74)\n🥇 Gold (75-89)\n💎 Brilliant (90-100)", reply_markup=kb.as_markup())
+    await message.answer("🛒 Магазин паков FTCL:", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_pack(callback: types.CallbackQuery):
@@ -221,19 +216,19 @@ async def buy_pack(callback: types.CallbackQuery):
     user = cursor.execute("SELECT balance FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
     
     if not user or user[0] < price:
-        await callback.answer("Мало звезд!", show_alert=True)
+        await callback.answer("Недостаточно звезд!", show_alert=True)
         return
 
-    card = cursor.execute("SELECT id, name, rating, position FROM all_cards WHERE rarity_type = ? ORDER BY RANDOM() LIMIT 1", (r_key,)).fetchone()
+    card = cursor.execute("SELECT id, name, rating FROM all_cards WHERE rarity_type = ? ORDER BY RANDOM() LIMIT 1", (r_key,)).fetchone()
     if not card:
-        await callback.answer("В этом паке пока пусто!", show_alert=True)
+        await callback.answer("В этом паке пока нет игроков!", show_alert=True)
         return
 
     cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (price, callback.from_user.id))
     cursor.execute("INSERT INTO user_cards (user_id, card_id) VALUES (?, ?)", (callback.from_user.id, card[0]))
     conn.commit()
     conn.close()
-    await callback.message.answer(f"📦 Пак открыт! Выпал: {card[1]} [{card[2]}] - {card[3]}")
+    await callback.message.answer(f"📦 Пак открыт! Тебе выпал: {card[1]} [{card[2]}]")
 
 # --- АДМИНКА ---
 @dp.message(Command("add_player"))
@@ -247,10 +242,10 @@ async def add_player(message: types.Message):
         conn.execute("INSERT INTO all_cards (name, rating, stars, club, division, position, rarity, rarity_type, photo_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", 
                      (name, int(rating), int(stars), club, division, position, r_label, r_key, photo_id))
         conn.commit()
-        await message.answer(f"✅ Игрок {name} добавлен!")
+        await message.answer(f"✅ Игрок {name} успешно добавлен!")
         conn.close()
     except:
-        await message.answer("Ошибка! Формат:\n`/add_player Имя, Ретинг, Звезды, Клуб, Дивизион, Позиция, file_id`")
+        await message.answer("Ошибка! Формат:\n`/add_player Рафинья, 82, 500, RAPID, Первый, Нападающий, file_id`")
 
 async def main():
     init_db()
