@@ -11,10 +11,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.client.default import DefaultBotProperties
 
 # --- НАСТРОЙКИ ---
-# Если запускаешь на Railway, добавь переменную TOKEN в разделе Variables!
 TOKEN = os.getenv("TOKEN") 
-# Твой ID (узнай в @userinfobot)
-ADMIN_ID = 1866813859 
+ADMIN_ID = 1866813859 # <--- ЗАМЕНИ НА СВОЙ ID
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='Markdown'))
 dp = Dispatcher()
@@ -50,7 +48,7 @@ def main_menu():
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-# --- ОСНОВНАЯ ЛОГИКА ---
+# --- ОБРАБОТЧИКИ МЕНЮ ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -61,9 +59,8 @@ async def cmd_start(message: types.Message):
     conn.execute("INSERT OR IGNORE INTO lineup (user_id) VALUES (?)", (message.from_user.id,))
     conn.commit()
     conn.close()
-    await message.answer("✅ Бот настроен и готов! Собери свой состав и побеждай.", reply_markup=main_menu())
+    await message.answer("✅ Бот запущен! Собери состав и вызывай друзей на матч.", reply_markup=main_menu())
 
-# ПОЛУЧЕНИЕ КАРТЫ (ЗАДЕРЖКА 24 ЧАСА)
 @dp.message(F.text == "Получить Карту 🏆")
 async def daily_card(message: types.Message):
     conn = sqlite3.connect("ftcl_cards.db")
@@ -74,17 +71,13 @@ async def daily_card(message: types.Message):
     if user and user[0]:
         last = datetime.datetime.strptime(user[0], '%Y-%m-%d %H:%M:%S')
         if now < last + datetime.timedelta(hours=24):
-            remaining = (last + datetime.timedelta(hours=24)) - now
-            hours, remainder = divmod(remaining.seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-            await message.answer(f"⏳ Следующая карта будет доступна через {hours}ч. {minutes}мин.")
-            conn.close()
+            rem = (last + datetime.timedelta(hours=24)) - now
+            await message.answer(f"⏳ Жди еще {rem.seconds // 3600}ч. {(rem.seconds // 60) % 60}мин.")
             return
 
     card = cursor.execute("SELECT id, name, rating, stars, photo_id, position FROM all_cards ORDER BY RANDOM() LIMIT 1").fetchone()
     if not card:
-        await message.answer("⚠️ В базе нет игроков! Попроси админа добавить их.")
-        conn.close()
+        await message.answer("⚠️ В базе пусто! Админ должен добавить игроков.")
         return
 
     cursor.execute("UPDATE users SET last_open=?, balance=balance+? WHERE user_id=?", 
@@ -92,41 +85,124 @@ async def daily_card(message: types.Message):
     cursor.execute("INSERT INTO user_cards (user_id, card_id) VALUES (?, ?)", (message.from_user.id, card[0]))
     conn.commit()
     conn.close()
+    
+    cap = f"🎊 Выпал: {card[1]} [{card[2]}]\nПозиция: {card[5]}\nБонус: +{card[3]}🌟"
+    if card[4] and card[4] != "None": await message.answer_photo(photo=card[4], caption=cap)
+    else: await message.answer(cap)
 
-    caption = f"🎊 Выпал игрок: {card[1]} [{card[2]}]\nПозиция: {card[5]}\nБонус: +{card[3]}🌟"
-    if card[4] and card[4] != "None":
-        await message.answer_photo(photo=card[4], caption=caption)
-    else:
-        await message.answer(caption)
+# --- СИСТЕМА СОСТАВА 4-3-3 ---
 
-# ПРОФИЛЬ (С ПОБЕДАМИ)
-@dp.message(F.text == "Профиль 👤")
-async def profile(message: types.Message):
+@dp.message(F.text == "Стартовый Состав 🏟️")
+async def show_lineup(message: types.Message):
     conn = sqlite3.connect("ftcl_cards.db")
-    u = conn.execute("SELECT balance, wins FROM users WHERE user_id=?", (message.from_user.id,)).fetchone()
-    c = conn.execute("SELECT COUNT(*) FROM user_cards WHERE user_id=?", (message.from_user.id,)).fetchone()[0]
-    conn.close()
-    await message.answer(f"👤 **Профиль: @{message.from_user.username}**\n\n"
-                         f"💰 Баланс: {u[0]}🌟\n"
-                         f"🏆 Побед в матчах: {u[1]}\n"
-                         f"🗂 Всего карт: {c}")
+    row = conn.execute("SELECT * FROM lineup WHERE user_id = ?", (message.from_user.id,)).fetchone()
+    if not row:
+        conn.execute("INSERT INTO lineup (user_id) VALUES (?)", (message.from_user.id,))
+        conn.commit()
+        row = [message.from_user.id] + [None]*11
 
-# МАГАЗИН И ИГРЫ (ЗАГЛУШКИ)
+    s = lambda x: "✅" if x else "❌"
+    text = (f"🏟 **Твой состав 4-3-3**\n\n"
+            f"🧤 ВРТ: {s(row[1])}\n"
+            f"🛡 ЗЩ: {s(row[2])}{s(row[3])}{s(row[4])}{s(row[5])}\n"
+            f"⚙️ ПЗ: {s(row[6])}{s(row[7])}{s(row[8])}\n"
+            f"🔥 НП: {s(row[9])}{s(row[10])}{s(row[11])}")
+
+    kb = InlineKeyboardBuilder()
+    for p in ["Вратарь", "Защитник", "Полузащитник", "Нападающий"]:
+        kb.button(text=f"Выбрать: {p}", callback_data=f"pick_{p}")
+    kb.adjust(2)
+    await message.answer(text, reply_markup=kb.as_markup())
+    conn.close()
+
+@dp.callback_query(F.data.startswith("pick_"))
+async def list_p(cb: types.CallbackQuery):
+    pos = cb.data.split("_")[1]
+    conn = sqlite3.connect("ftcl_cards.db")
+    cards = conn.execute("""SELECT all_cards.id, name, rating FROM user_cards 
+                             JOIN all_cards ON user_cards.card_id = all_cards.id 
+                             WHERE user_id = ? AND position LIKE ?""", 
+                          (cb.from_user.id, f"%{pos}%")).fetchall()
+    if not cards:
+        await cb.answer(f"Нет игроков на позицию {pos}!", show_alert=True)
+        return
+    kb = InlineKeyboardBuilder()
+    for c in cards: kb.button(text=f"{c[1]} ({c[2]})", callback_data=f"set_{pos}_{c[0]}")
+    kb.adjust(1)
+    await cb.message.edit_text(f"Выбери ({pos}):", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("set_"))
+async def save_p(cb: types.CallbackQuery):
+    _, pos, c_id = cb.data.split("_")
+    conn = sqlite3.connect("ftcl_cards.db")
+    cursor = conn.cursor()
+    if pos == "Вратарь": cursor.execute("UPDATE lineup SET gk=? WHERE user_id=?", (c_id, cb.from_user.id))
+    elif pos == "Защитник":
+        l = cursor.execute("SELECT def1,def2,def3,def4 FROM lineup WHERE user_id=?", (cb.from_user.id,)).fetchone()
+        slot = "def1" if not l[0] else "def2" if not l[1] else "def3" if not l[2] else "def4"
+        cursor.execute(f"UPDATE lineup SET {slot}=? WHERE user_id=?", (c_id, cb.from_user.id))
+    elif pos == "Полузащитник":
+        l = cursor.execute("SELECT mid1,mid2,mid3 FROM lineup WHERE user_id=?", (cb.from_user.id,)).fetchone()
+        slot = "mid1" if not l[0] else "mid2" if not l[1] else "mid3"
+        cursor.execute(f"UPDATE lineup SET {slot}=? WHERE user_id=?", (c_id, cb.from_user.id))
+    elif pos == "Нападающий":
+        l = cursor.execute("SELECT atk1,atk2,atk3 FROM lineup WHERE user_id=?", (cb.from_user.id,)).fetchone()
+        slot = "atk1" if not l[0] else "atk2" if not l[1] else "atk3"
+        cursor.execute(f"UPDATE lineup SET {slot}=? WHERE user_id=?", (c_id, cb.from_user.id))
+    conn.commit()
+    conn.close()
+    await cb.answer("Добавлено!")
+    await show_lineup(cb.message)
+
+# --- ПОИСК СОПЕРНИКА И ПРОФИЛЬ ---
+
+@dp.message(F.text == "Поиск соперника ⚔️")
+async def find_op(msg: types.Message, state: FSMContext):
+    await msg.answer("Введи @username соперника:")
+    await state.set_state(GameStates.waiting_for_opponent)
+
+@dp.message(GameStates.waiting_for_opponent)
+async def invite(msg: types.Message, state: FSMContext):
+    target = msg.text.replace("@", "")
+    conn = sqlite3.connect("ftcl_cards.db")
+    op = conn.execute("SELECT user_id FROM users WHERE username = ?", (target,)).fetchone()
+    if not op:
+        await msg.answer("Юзер не найден.")
+    else:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="Принять ✅", callback_data=f"match_{msg.from_user.id}")
+        await bot.send_message(op[0], f"⚡️ Вызов от @{msg.from_user.username}!", reply_markup=kb.as_markup())
+        await msg.answer("Вызов отправлен!")
+    await state.clear()
+    conn.close()
+
+@dp.message(F.text == "Профиль 👤")
+async def prof(msg: types.Message):
+    conn = sqlite3.connect("ftcl_cards.db")
+    u = conn.execute("SELECT balance, wins FROM users WHERE user_id=?", (msg.from_user.id,)).fetchone()
+    c = conn.execute("SELECT COUNT(*) FROM user_cards WHERE user_id=?", (msg.from_user.id,)).fetchone()[0]
+    await msg.answer(f"👤 @{msg.from_user.username}\n💰 Баланс: {u[0]}🌟\n🏆 Побед: {u[1]}\n🗂 Карт: {c}")
+
 @dp.message(F.text == "Магазин 🛒")
-async def shop(message: types.Message):
-    await message.answer("🛒 Магазин в разработке. Скоро здесь можно будет покупать паки!")
+async def shop(msg: types.Message): await msg.answer("🛒 Магазин: Паки появятся скоро!")
 
 @dp.message(F.text == "Мини-Игры 🎲")
-async def games(message: types.Message):
-    await message.answer("🎲 Игры (Казино/Кости) появятся в следующем обновлении!")
+async def games(msg: types.Message): await msg.answer("🎲 Игры в разработке!")
 
-# --- СИСТЕМА СОСТАВА И МАТЧЕЙ ---
-# (Код из предыдущего сообщения для Стартового состава остается таким же)
-# Вставь сюда блоки show_lineup, pick_player и save_player из моего прошлого ответа.
+@dp.message(Command("add_player"))
+async def add(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID: return
+    try:
+        d = msg.text.split(", ")
+        conn = sqlite3.connect("ftcl_cards.db")
+        conn.execute("INSERT INTO all_cards (name, rating, stars, position, photo_id) VALUES (?, ?, ?, ?, ?)", 
+                     (d[1], int(d[2]), int(d[3]), d[4], d[5]))
+        conn.commit()
+        await msg.answer("✅ Добавлен!")
+    except: await msg.answer("Формат: /add_player, Имя, Рейтинг, Звезды, Позиция, photo_id")
 
 async def main():
     init_db()
-    print("Бот успешно запущен на Railway!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
