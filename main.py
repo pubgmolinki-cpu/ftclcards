@@ -15,14 +15,10 @@ ADMIN_ID = 1866813859 # Твой ID
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='Markdown'))
 dp = Dispatcher()
 
-# --- ФУНКЦИЯ КОНВЕРТАЦИИ ---
 def get_rarity_by_rating(rating):
-    if 50 <= rating <= 74:
-        return "Bronze"
-    elif 75 <= rating <= 89:
-        return "Gold"
-    elif rating >= 90:
-        return "Brilliant"
+    if 50 <= rating <= 74: return "Bronze"
+    elif 75 <= rating <= 89: return "Gold"
+    elif rating >= 90: return "Brilliant"
     return "Bronze"
 
 # --- БАЗА ДАННЫХ ---
@@ -38,22 +34,23 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- ФУНКЦИЯ ИСПРАВЛЕНИЯ СТАРЫХ ЗАПИСЕЙ ---
-def fix_old_cards():
+# --- УСИЛЕННАЯ ПОЧИНКА БАЗЫ ---
+def fix_database_integrity():
     conn = sqlite3.connect("ftcl_cards.db")
     cursor = conn.cursor()
-    # Ищем карты, где rarity_type пустой или NULL
-    old_players = cursor.execute("SELECT id, rating FROM all_cards WHERE rarity_type IS NULL OR rarity_type = ''").fetchall()
     
+    # 1. Исправляем пустые редкости
+    old_players = cursor.execute("SELECT id, rating FROM all_cards WHERE rarity_type IS NULL OR rarity_type = ''").fetchall()
     for p_id, rating in old_players:
-        new_rarity = get_rarity_by_rating(rating)
-        cursor.execute("UPDATE all_cards SET rarity_type = ? WHERE id = ?", (new_rarity, p_id))
+        cursor.execute("UPDATE all_cards SET rarity_type = ? WHERE id = ?", (get_rarity_by_rating(rating), p_id))
+    
+    # 2. Убираем лишние пробелы у ВСЕХ игроков (критично для поиска в магазине)
+    cursor.execute("UPDATE all_cards SET rarity_type = trim(rarity_type)")
     
     conn.commit()
-    count = len(old_players)
+    count = cursor.execute("SELECT COUNT(*) FROM all_cards").fetchone()[0]
     conn.close()
-    if count > 0:
-        print(f"🛠 Исправлено старых игроков: {count}")
+    print(f"📊 Всего игроков в базе: {count}")
 
 def main_menu():
     builder = ReplyKeyboardBuilder()
@@ -63,16 +60,19 @@ def main_menu():
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
+# --- ЛОГИКА ВЫДАЧИ ---
 def get_random_card(rarity=None):
     conn = sqlite3.connect("ftcl_cards.db")
     cursor = conn.cursor()
+    
     if not rarity:
         rand = random.randint(1, 100)
         if rand <= 75: rarity = "Bronze"
         elif rand <= 95: rarity = "Gold"
         else: rarity = "Brilliant"
     
-    card = cursor.execute("SELECT * FROM all_cards WHERE rarity_type = ? ORDER BY RANDOM() LIMIT 1", (rarity,)).fetchone()
+    # Используем TRIM, чтобы исключить ошибки с пробелами при поиске
+    card = cursor.execute("SELECT * FROM all_cards WHERE trim(rarity_type) = ? ORDER BY RANDOM() LIMIT 1", (rarity,)).fetchone()
     conn.close()
     return card
 
@@ -86,7 +86,7 @@ async def cmd_start(message: types.Message):
                  (message.from_user.id, message.from_user.username or "Player"))
     conn.commit()
     conn.close()
-    await message.answer("⚽️ Бот запущен. Старые карты обновлены и готовы к выдаче!", reply_markup=main_menu())
+    await message.answer("⚽️ Бот обновлен! Если игроки не выпадали — теперь должны.", reply_markup=main_menu())
 
 @dp.message(F.text == "Получить Карту 🏆")
 async def daily_card(message: types.Message):
@@ -99,12 +99,12 @@ async def daily_card(message: types.Message):
         last = datetime.datetime.strptime(user[0], '%Y-%m-%d %H:%M:%S')
         if now < last + datetime.timedelta(hours=24):
             rem = (last + datetime.timedelta(hours=24)) - now
-            await message.answer(f"⏳ Жди еще {rem.seconds // 3600}ч. {(rem.seconds // 60) % 60}мин.")
+            await message.answer(f"⏳ Жди еще {rem.seconds // 3600}ч.")
             return
 
     card = get_random_card()
     if not card:
-        await message.answer("⚠️ Игроки не найдены. Добавь их через /add_player")
+        await message.answer("⚠️ В базе пусто! Добавь игроков.")
         return
 
     cursor.execute("UPDATE users SET last_open=?, balance=balance+? WHERE user_id=?", 
@@ -114,13 +114,7 @@ async def daily_card(message: types.Message):
     conn.close()
     
     emoji = {"Bronze": "🥉", "Gold": "🥇", "Brilliant": "💎"}
-    text = (f"🎊 **Новая карта!**\n\n"
-            f"👤 Имя: {card[1]}\n"
-            f"📈 Рейтинг: {card[2]}\n"
-            f"🛡 Клуб: {card[4]}\n"
-            f"✨ Тип: {card[5]} {emoji.get(card[5], '')}\n"
-            f"💰 Бонус: +{card[3]} 🌟")
-            
+    text = (f"🎊 **Новая карта!**\n\n👤 {card[1]}\n📈 Рейтинг: {card[2]}\n🛡 Клуб: {card[4]}\n✨ Тип: {card[5]} {emoji.get(card[5], '')}\n💰 Бонус: +{card[3]} 🌟")
     if card[6] and card[6] != "None": await message.answer_photo(photo=card[6], caption=text)
     else: await message.answer(text)
 
@@ -146,14 +140,15 @@ async def buy_pack(cb: types.CallbackQuery):
 
     card = get_random_card(rarity)
     if not card:
-        await cb.answer("В этой категории пока нет игроков!", show_alert=True)
+        await cb.answer(f"В категории {rarity} пока нет игроков!", show_alert=True)
+        conn.close()
         return
 
     conn.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (prices[rarity], cb.from_user.id))
     conn.execute("INSERT INTO user_cards (user_id, card_id) VALUES (?, ?)", (cb.from_user.id, card[0]))
     conn.commit()
     conn.close()
-    await cb.message.answer(f"📦 Выпал {rarity} игрок: **{card[1]}**!")
+    await cb.message.answer(f"📦 Ты выбил {rarity} карту: **{card[1]}**!")
     await cb.answer()
 
 @dp.message(F.text == "Профиль 👤")
@@ -162,7 +157,7 @@ async def profile(message: types.Message):
     u = conn.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,)).fetchone()
     c = conn.execute("SELECT COUNT(*) FROM user_cards WHERE user_id=?", (message.from_user.id,)).fetchone()[0]
     conn.close()
-    await message.answer(f"👤 **@{message.from_user.username}**\n💰 Баланс: {u[0]}🌟\n🗂 Карт: {c}")
+    await message.answer(f"👤 @{message.from_user.username}\n💰 Баланс: {u[0]}🌟\n🗂 Карт: {c}")
 
 @dp.message(Command("add_player"))
 async def add_player(msg: types.Message):
@@ -178,11 +173,11 @@ async def add_player(msg: types.Message):
         conn.close()
         await msg.answer(f"✅ Добавлен {name} ({rarity})")
     except:
-        await msg.answer("Формат: `Имя, Рейтинг, Звезды, Клуб, file_id`")
+        await msg.answer("Ошибка! Формат: `Имя, Рейтинг, Звезды, Клуб, file_id`")
 
 async def main():
     init_db()
-    fix_old_cards() # <--- Запуск исправителя
+    fix_database_integrity() # Запуск тотальной проверки
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
