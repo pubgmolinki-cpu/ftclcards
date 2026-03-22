@@ -11,7 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.client.default import DefaultBotProperties
 
 # --- НАСТРОЙКИ ---
-TOKEN = ("8745143259:AAGndBWIy_9G8C4GjovoRA700trkveXNGNU)" # Берем токен из переменных Railway
+TOKEN = ("8745143259:AAGndBWIy_9G8C4GjovoRA700trkveXNGNU") # Берем токен из переменных Railway
 ADMIN_ID = 1866813859 # Твой ID
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='Markdown'))
