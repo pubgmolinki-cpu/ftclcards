@@ -7,6 +7,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramBadRequest
 
 # --- НАСТРОЙКИ ---
 TOKEN = os.getenv("TOKEN") 
@@ -61,7 +62,7 @@ async def cmd_start(message: types.Message):
                  (message.from_user.id, message.from_user.username or "Player"))
     conn.commit()
     conn.close()
-    await message.answer("⚽️ Система FTCL готова! Паки теперь открываются с интригой.", reply_markup=main_menu())
+    await message.answer("⚽️ Система FTCL исправлена. Если фото не загрузится, выведу текст!", reply_markup=main_menu())
 
 def main_menu():
     builder = ReplyKeyboardBuilder()
@@ -71,7 +72,6 @@ def main_menu():
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-# ИМИТАЦИЯ ОТКРЫТИЯ ДЛЯ ЕЖЕДНЕВНОЙ КАРТЫ
 @dp.message(F.text == "Получить Карту 🏆")
 async def daily_card(message: types.Message):
     conn = sqlite3.connect("ftcl_cards.db")
@@ -91,11 +91,10 @@ async def daily_card(message: types.Message):
         await message.answer("⚠️ Игроков нет в базе!")
         return
 
-    # Эффект ожидания
     status_msg = await message.answer("📦 Распаковываем ежедневный бонус...")
-    await asyncio.sleep(1.5)
+    await asyncio.sleep(1.2)
     await status_msg.edit_text("✨ Рассматриваем карточку...")
-    await asyncio.sleep(1.5)
+    await asyncio.sleep(1.2)
     await status_msg.delete()
 
     cursor.execute("UPDATE users SET last_open=?, balance=balance+? WHERE user_id=?", 
@@ -108,8 +107,13 @@ async def daily_card(message: types.Message):
     text = (f"🎊 **Твоя карта на сегодня!**\n\n👤 {card[1]}\n📈 Рейтинг: {card[2]}\n🛡 Клуб: {card[4]}\n"
             f"✨ Тип: {card[5].capitalize()} {emoji.get(card[5].lower(), '')}\n💰 Бонус: +{card[3]} 🌟")
     
-    if card[6] and card[6] != "None": await message.answer_photo(photo=card[6], caption=text)
-    else: await message.answer(text)
+    try:
+        if card[6] and card[6] != "None":
+            await message.answer_photo(photo=card[6], caption=text)
+        else:
+            await message.answer(text)
+    except Exception:
+        await message.answer(text + "\n\n⚠️ (Ошибка загрузки фото, проверьте file_id)")
 
 @dp.message(F.text == "Магазин 🛒")
 async def shop(message: types.Message):
@@ -120,7 +124,6 @@ async def shop(message: types.Message):
     kb.adjust(1)
     await message.answer("🛒 **Магазин паков FTCL**", reply_markup=kb.as_markup())
 
-# ИМИТАЦИЯ ОТКРЫТИЯ ДЛЯ ПАКОВ В МАГАЗИНЕ
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_pack(cb: types.CallbackQuery):
     rarity = cb.data.split("_")[1]
@@ -139,20 +142,16 @@ async def buy_pack(cb: types.CallbackQuery):
         conn.close()
         return
 
-    # Списание средств
     conn.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (prices[rarity], cb.from_user.id))
     conn.execute("INSERT INTO user_cards (user_id, card_id) VALUES (?, ?)", (cb.from_user.id, card[0]))
     conn.commit()
     conn.close()
 
-    # Интрига открытия
     await cb.answer() 
     opening_msg = await cb.message.answer(f"📦 Покупаем {rarity} пак...")
-    await asyncio.sleep(1.2)
+    await asyncio.sleep(1)
     await opening_msg.edit_text("🎬 Открываем упаковку...")
-    await asyncio.sleep(1.2)
-    await opening_msg.edit_text("🔥 Кто же там?...")
-    await asyncio.sleep(1.2)
+    await asyncio.sleep(1)
     await opening_msg.delete()
 
     emoji = {"bronze": "🥉", "gold": "🥇", "brilliant": "💎"}
@@ -162,10 +161,14 @@ async def buy_pack(cb: types.CallbackQuery):
             f"🛡 Клуб: {card[4]}\n"
             f"✨ Редкость: {card[5].capitalize()} {emoji.get(card[5].lower(), '')}")
 
-    if card[6] and card[6] != "None": 
-        await cb.message.answer_photo(photo=card[6], caption=text)
-    else: 
-        await cb.message.answer(text)
+    # ЗАЩИТА ОТ ОШИБКИ ФОТО
+    try:
+        if card[6] and card[6] != "None": 
+            await cb.message.answer_photo(photo=card[6], caption=text)
+        else: 
+            await cb.message.answer(text)
+    except Exception:
+        await cb.message.answer(text + "\n\n⚠️ (Карточка выдана без фото из-за ошибки file_id)")
 
 @dp.message(F.text == "Профиль 👤")
 async def profile(message: types.Message):
