@@ -20,8 +20,8 @@ def get_db_connection():
 
 # --- ЛОГИКА НАГРАД ---
 def get_stars_by_rating(rating):
-    if rating >= 99: return 10000 # Legend ✨
-    if rating >= 95: return 5000  # Ivents 🎊
+    if rating >= 99: return 10000 
+    if rating >= 95: return 5000  
     rates = {90: 2500, 85: 2000, 80: 1750, 75: 1500, 70: 1250, 60: 1000, 55: 500}
     for r, val in rates.items():
         if rating >= r: return val
@@ -41,7 +41,6 @@ def get_card(rarity_filter=None):
             elif r <= 99: rtype = "ivents"
             else: rtype = "legend"
             cur.execute("SELECT * FROM all_cards WHERE LOWER(rarity_type) = %s ORDER BY RANDOM() LIMIT 1", (rtype,))
-        
         card = cur.fetchone()
         if not card: 
             cur.execute("SELECT * FROM all_cards ORDER BY RANDOM() LIMIT 1")
@@ -51,7 +50,7 @@ def get_card(rarity_filter=None):
         cur.close()
         conn.close()
 
-# --- ХЕНДЛЕРЫ ---
+# --- ОСНОВНЫЕ ХЕНДЛЕРЫ ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject):
@@ -62,16 +61,15 @@ async def cmd_start(message: types.Message, command: CommandObject):
     try:
         cur.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
         is_new = cur.fetchone() is None
-        
         cur.execute("INSERT INTO users (user_id, username) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username", 
                      (user_id, message.from_user.username or "Игрок"))
         
-        # РЕФЕРАЛЬНАЯ НАГРАДА: 1500 звезд
+        # Награда за реферала: 1500 звезд
         if is_new and referrer_id and referrer_id.isdigit():
             ref_id = int(referrer_id)
-            if ref_id != user_id: # Защита от самоприглашения
+            if ref_id != user_id:
                 cur.execute("UPDATE users SET balance = balance + 1500 WHERE user_id = %s", (ref_id,))
-                try: await bot.send_message(ref_id, "🎁 У вас новый реферал! Вам начислено <b>1500 ⭐</b>")
+                try: await bot.send_message(ref_id, "🎁 У вас новый реферал! Зачислено <b>1500 ⭐</b>")
                 except: pass
         conn.commit()
     finally:
@@ -91,7 +89,7 @@ async def cmd_start(message: types.Message, command: CommandObject):
 async def ref_system(message: types.Message):
     bot_me = await bot.get_me()
     ref_link = f"https://t.me/{bot_me.username}?start={message.from_user.id}"
-    await message.answer(f"👥 <b>Реферальная Система</b>\n\nПриглашай друзей и получай <b>1500 ⭐</b>!\n\nТвоя ссылка:\n<code>{ref_link}</code> ⚽")
+    await message.answer(f"👥 <b>Реферальная Система</b>\n\nПриглашай друзей и получай <b>1500 ⭐</b>!\n\nТвоя ссылка:\n<code>{ref_link}</code>")
 
 @dp.message((F.text == "Получить Карту 🏆") | (F.text.casefold() == "фтклкарта"))
 async def give_card_free(message: types.Message):
@@ -103,113 +101,96 @@ async def give_card_free(message: types.Message):
     
     card = get_card()
     if not card: return await message.reply("⚠️ База пуста.")
-    
     reward = get_stars_by_rating(card['rating'])
-    conn = get_db_connection()
-    cur = conn.cursor()
+    conn = get_db_connection(); cur = conn.cursor()
     try:
         cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (reward, user_id))
         cur.execute("INSERT INTO user_cards (user_id, card_id) VALUES (%s, %s)", (user_id, card['id']))
         conn.commit()
         cooldowns[user_id] = now
-        await message.reply_photo(photo=card['photo_id'], caption=f"👤 <b>{html.escape(card['name'])}</b> | {card['rating']}\n✨ {card['rarity']}\n💰 <b>+{reward}</b> ⭐")
+        await message.reply_photo(photo=card['photo_id'], caption=f"👤 <b>{html.escape(card['name'])}</b>\n📈 Рейтинг: {card['rating']}\n✨ {card['rarity']}\n💰 <b>+{reward}</b> ⭐")
     finally:
-        cur.close()
-        conn.close()
+        cur.close(); conn.close()
+
+@dp.message(F.text == "Профиль 👤")
+async def profile(message: types.Message):
+    conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("SELECT balance FROM users WHERE user_id=%s", (message.from_user.id,))
+        u = cur.fetchone()
+        cur.execute("SELECT COUNT(*) FROM user_cards WHERE user_id=%s", (message.from_user.id,))
+        c_count = cur.fetchone()[0]
+        kb = InlineKeyboardBuilder(); kb.button(text="Коллекция 🗂", callback_data="show_collection")
+        await message.reply(f"👤 <b>@{message.from_user.username}</b>\n💰 Баланс: <b>{u['balance'] if u else 0}</b> ⭐\n🗂 Карт: <b>{c_count}</b>", reply_markup=kb.as_markup())
+    finally:
+        cur.close(); conn.close()
+
+@dp.callback_query(F.data == "show_collection")
+async def view_collection(callback: types.CallbackQuery):
+    conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("""SELECT c.name, c.rating FROM all_cards c JOIN user_cards uc ON c.id = uc.card_id WHERE uc.user_id = %s""", (callback.from_user.id,))
+        cards = cur.fetchall()
+        if not cards: return await callback.answer("Пусто!", show_alert=True)
+        text = "🗂 <b>Коллекция:</b>\n\n" + "\n".join([f"▫️ {c['name']} ({c['rating']})" for c in cards])
+        await callback.message.answer(text[:4096]); await callback.answer()
+    finally:
+        cur.close(); conn.close()
 
 @dp.message(F.text == "Магазин 🛒")
 async def open_shop(message: types.Message):
     kb = InlineKeyboardBuilder()
-    # ЦЕНЫ УВЕЛИЧЕНЫ В 2 РАЗА
     kb.button(text="📦 Bronze (4000⭐)", callback_data="buy_bronze")
     kb.button(text="📦 Gold (5700⭐)", callback_data="buy_gold")
     kb.button(text="📦 Brilliant (7000⭐)", callback_data="buy_brilliant")
     kb.adjust(1)
-    await message.answer("🛒 <b>Магазин паков</b>", reply_markup=kb.as_markup())
+    await message.answer("🛒 <b>Магазин</b>", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_pack(callback: types.CallbackQuery):
     pack = callback.data.split("_")[1]
     costs = {"bronze": 4000, "gold": 5700, "brilliant": 7000}
     cost = costs[pack]
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=DictCursor)
+    conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
     try:
         cur.execute("SELECT balance FROM users WHERE user_id = %s", (callback.from_user.id,))
         res = cur.fetchone()
-        if not res or res['balance'] < cost: return await callback.answer("❌ Недостаточно звезд!", show_alert=True)
-        
+        if not res or res['balance'] < cost: return await callback.answer("❌ Мало звезд!", show_alert=True)
         card = get_card(pack)
         reward = get_stars_by_rating(card['rating'])
         cur.execute("UPDATE users SET balance = balance - %s + %s WHERE user_id = %s", (cost, reward, callback.from_user.id))
         cur.execute("INSERT INTO user_cards (user_id, card_id) VALUES (%s, %s)", (callback.from_user.id, card['id']))
         conn.commit()
         await callback.message.reply_photo(photo=card['photo_id'], caption=f"👤 <b>{card['name']}</b>\n💰 <b>+{reward}</b> ⭐")
-        await callback.answer("Пак открыт!")
+        await callback.answer("Куплено!")
     finally:
-        cur.close()
-        conn.close()
-
-# ... (остальные хендлеры Профиль, ТОП-10 и Админка остаются без изменений) ...
-
-@dp.message(F.text == "Профиль 👤")
-async def profile(message: types.Message):
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=DictCursor)
-    try:
-        cur.execute("SELECT balance FROM users WHERE user_id=%s", (message.from_user.id,))
-        u = cur.fetchone()
-        cur.execute("SELECT COUNT(*) FROM user_cards WHERE user_id=%s", (message.from_user.id,))
-        c_count = cur.fetchone()[0]
-        kb = InlineKeyboardBuilder()
-        kb.button(text="Посмотреть Коллекцию 🗂", callback_data="show_collection")
-        await message.reply(f"👤 <b>Профиль @{message.from_user.username}</b>\n\n💰 Баланс: <b>{u['balance'] if u else 0}</b> ⭐\n🗂 В коллекции: <b>{c_count}</b> шт.", reply_markup=kb.as_markup())
-    finally:
-        cur.close()
-        conn.close()
-
-@dp.callback_query(F.data == "show_collection")
-async def view_collection(callback: types.CallbackQuery):
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=DictCursor)
-    try:
-        cur.execute("""SELECT c.name, c.rating FROM all_cards c 
-                       JOIN user_cards uc ON c.id = uc.card_id 
-                       WHERE uc.user_id = %s""", (callback.from_user.id,))
-        cards = cur.fetchall()
-        if not cards: return await callback.answer("Пусто!", show_alert=True)
-        text = "🗂 <b>Твоя коллекция:</b>\n\n" + "\n".join([f"▫️ {c['name']} ({c['rating']})" for c in cards])
-        await callback.message.answer(text[:4096])
-        await callback.answer()
-    finally:
-        cur.close()
-        conn.close()
+        cur.close(); conn.close()
 
 @dp.message(F.text == "ТОП-10 📊")
 async def show_top(message: types.Message):
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=DictCursor)
+    conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
     try:
         cur.execute("SELECT username, balance FROM users ORDER BY balance DESC LIMIT 10")
         top = cur.fetchall()
         text = "📊 <b>Лидеры:</b>\n\n" + "\n".join([f"{i}. {u['username']} — {u['balance']}⭐" for i, u in enumerate(top, 1)])
         await message.answer(text)
     finally:
-        cur.close()
-        conn.close()
+        cur.close(); conn.close()
+
+# --- АДМИН ПАНЕЛЬ ---
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     if message.from_user.id == ADMIN_ID:
         photo = max(message.photo, key=lambda p: p.file_size)
         temp_photo_buffer[ADMIN_ID] = photo.file_id
-        await message.reply("📸 Фото сохранено. Введи /add_player")
+        await message.reply("📸 Фото в буфере. /add_player")
 
 @dp.message(Command("add_player"))
 async def add_player(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     p_id = temp_photo_buffer.get(ADMIN_ID)
-    if not p_id: return await message.reply("❌ Сначала фото!")
+    if not p_id: return await message.reply("❌ Фото!")
     try:
         data = message.text.replace("/add_player ", "").split(", ")
         name, rating, pos, club = data[0].strip(), int(data[1].strip()), data[2].strip(), data[3].strip()
@@ -218,16 +199,24 @@ async def add_player(message: types.Message):
         elif rating >= 90: rtype, rlabel = "brilliant", "Brilliant 💎"
         elif rating >= 75: rtype, rlabel = "gold", "Gold 🥇"
         else: rtype, rlabel = "bronze", "Bronze 🥉"
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("INSERT INTO all_cards (name, rating, position, rarity, rarity_type, club, photo_id) VALUES (%s,%s,%s,%s,%s,%s,%s)", 
-                    (name, rating, pos, rlabel, rtype, club, p_id))
-        conn.commit()
-        cur.close()
-        conn.close()
-        await message.answer(f"✅ Добавлен: {name} ({rlabel})")
-        del temp_photo_buffer[ADMIN_ID]
-    except: await message.answer("❌ Формат: Имя, Рейтинг, Поз, Клуб")
+        conn = get_db_connection(); cur = conn.cursor()
+        cur.execute("INSERT INTO all_cards (name, rating, position, rarity, rarity_type, club, photo_id) VALUES (%s,%s,%s,%s,%s,%s,%s)", (name, rating, pos, rlabel, rtype, club, p_id))
+        conn.commit(); cur.close(); conn.close()
+        await message.answer(f"✅ Добавлен: {name}"); del temp_photo_buffer[ADMIN_ID]
+    except: await message.answer("❌ Ошибка формата")
+
+# ВОТ ЭТА ФУНКЦИЯ ВЕРНУЛАСЬ
+@dp.message(Command("reset_progress"))
+async def admin_reset(message: types.Message):
+    if message.from_user.id == ADMIN_ID:
+        conn = get_db_connection(); cur = conn.cursor()
+        try:
+            cur.execute("TRUNCATE TABLE user_cards")
+            cur.execute("UPDATE users SET balance = 1000")
+            conn.commit()
+            await message.answer("⚠️ <b>ПРОГРЕСС ВСЕХ ИГРОКОВ СБРОШЕН!</b>\nБаланс у всех: 1000 ⭐, коллекции пусты.")
+        finally:
+            cur.close(); conn.close()
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
