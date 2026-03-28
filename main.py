@@ -6,7 +6,6 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 
 # --- КОНФИГУРАЦИЯ ---
-# Railway сам подставит значения из раздела Variables
 TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = 1866813859 
@@ -17,7 +16,6 @@ cooldowns = {}
 temp_photo_buffer = {}
 
 def get_db_connection():
-    # На Railway лучше использовать DATABASE_URL напрямую без лишних параметров
     return psycopg2.connect(DATABASE_URL)
 
 # --- ЛОГИКА НАГРАД ---
@@ -64,13 +62,17 @@ async def cmd_start(message: types.Message, command: CommandObject):
     try:
         cur.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
         is_new = cur.fetchone() is None
+        
         cur.execute("INSERT INTO users (user_id, username) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username", 
                      (user_id, message.from_user.username or "Игрок"))
-        if is_new and referrer_id and referrer_id.isdigit() and int(referrer_id) != user_id:
+        
+        # РЕФЕРАЛЬНАЯ НАГРАДА: 1500 звезд
+        if is_new and referrer_id and referrer_id.isdigit():
             ref_id = int(referrer_id)
-            cur.execute("UPDATE users SET balance = balance + 5000 WHERE user_id = %s", (ref_id,))
-            try: await bot.send_message(ref_id, "🎁 У вас новый реферал! Зачислено <b>5000 ⭐</b>")
-            except: pass
+            if ref_id != user_id: # Защита от самоприглашения
+                cur.execute("UPDATE users SET balance = balance + 1500 WHERE user_id = %s", (ref_id,))
+                try: await bot.send_message(ref_id, "🎁 У вас новый реферал! Вам начислено <b>1500 ⭐</b>")
+                except: pass
         conn.commit()
     finally:
         cur.close()
@@ -83,13 +85,13 @@ async def cmd_start(message: types.Message, command: CommandObject):
     kb.button(text="Реферальная Система 👥")
     kb.button(text="ТОП-10 📊")
     kb.adjust(2, 2, 1)
-    await message.answer("⚽️ <b>FTCL Cards готов к старту!</b>", reply_markup=kb.as_markup(resize_keyboard=True))
+    await message.answer("⚽️ <b>FTCL Cards приветствует тебя!</b>", reply_markup=kb.as_markup(resize_keyboard=True))
 
 @dp.message(F.text == "Реферальная Система 👥")
 async def ref_system(message: types.Message):
     bot_me = await bot.get_me()
     ref_link = f"https://t.me/{bot_me.username}?start={message.from_user.id}"
-    await message.answer(f"👥 <b>Реферальная Система</b>\n\nПриглашай друзей и получай <b>5000 ⭐</b>!\n\nВот ваша ссылка:\n<code>{ref_link}</code> ⚽")
+    await message.answer(f"👥 <b>Реферальная Система</b>\n\nПриглашай друзей и получай <b>1500 ⭐</b>!\n\nТвоя ссылка:\n<code>{ref_link}</code> ⚽")
 
 @dp.message((F.text == "Получить Карту 🏆") | (F.text.casefold() == "фтклкарта"))
 async def give_card_free(message: types.Message):
@@ -114,6 +116,41 @@ async def give_card_free(message: types.Message):
     finally:
         cur.close()
         conn.close()
+
+@dp.message(F.text == "Магазин 🛒")
+async def open_shop(message: types.Message):
+    kb = InlineKeyboardBuilder()
+    # ЦЕНЫ УВЕЛИЧЕНЫ В 2 РАЗА
+    kb.button(text="📦 Bronze (4000⭐)", callback_data="buy_bronze")
+    kb.button(text="📦 Gold (5700⭐)", callback_data="buy_gold")
+    kb.button(text="📦 Brilliant (7000⭐)", callback_data="buy_brilliant")
+    kb.adjust(1)
+    await message.answer("🛒 <b>Магазин паков</b>", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("buy_"))
+async def buy_pack(callback: types.CallbackQuery):
+    pack = callback.data.split("_")[1]
+    costs = {"bronze": 4000, "gold": 5700, "brilliant": 7000}
+    cost = costs[pack]
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("SELECT balance FROM users WHERE user_id = %s", (callback.from_user.id,))
+        res = cur.fetchone()
+        if not res or res['balance'] < cost: return await callback.answer("❌ Недостаточно звезд!", show_alert=True)
+        
+        card = get_card(pack)
+        reward = get_stars_by_rating(card['rating'])
+        cur.execute("UPDATE users SET balance = balance - %s + %s WHERE user_id = %s", (cost, reward, callback.from_user.id))
+        cur.execute("INSERT INTO user_cards (user_id, card_id) VALUES (%s, %s)", (callback.from_user.id, card['id']))
+        conn.commit()
+        await callback.message.reply_photo(photo=card['photo_id'], caption=f"👤 <b>{card['name']}</b>\n💰 <b>+{reward}</b> ⭐")
+        await callback.answer("Пак открыт!")
+    finally:
+        cur.close()
+        conn.close()
+
+# ... (остальные хендлеры Профиль, ТОП-10 и Админка остаются без изменений) ...
 
 @dp.message(F.text == "Профиль 👤")
 async def profile(message: types.Message):
@@ -148,38 +185,6 @@ async def view_collection(callback: types.CallbackQuery):
         cur.close()
         conn.close()
 
-@dp.message(F.text == "Магазин 🛒")
-async def open_shop(message: types.Message):
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📦 Bronze (2000⭐)", callback_data="buy_bronze")
-    kb.button(text="📦 Gold (2850⭐)", callback_data="buy_gold")
-    kb.button(text="📦 Brilliant (3500⭐)", callback_data="buy_brilliant")
-    kb.adjust(1)
-    await message.answer("🛒 <b>Магазин паков</b>", reply_markup=kb.as_markup())
-
-@dp.callback_query(F.data.startswith("buy_"))
-async def buy_pack(callback: types.CallbackQuery):
-    pack = callback.data.split("_")[1]
-    costs = {"bronze": 2000, "gold": 2850, "brilliant": 3500}
-    cost = costs[pack]
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=DictCursor)
-    try:
-        cur.execute("SELECT balance FROM users WHERE user_id = %s", (callback.from_user.id,))
-        res = cur.fetchone()
-        if not res or res['balance'] < cost: return await callback.answer("❌ Мало звезд!", show_alert=True)
-        
-        card = get_card(pack)
-        reward = get_stars_by_rating(card['rating'])
-        cur.execute("UPDATE users SET balance = balance - %s + %s WHERE user_id = %s", (cost, reward, callback.from_user.id))
-        cur.execute("INSERT INTO user_cards (user_id, card_id) VALUES (%s, %s)", (callback.from_user.id, card['id']))
-        conn.commit()
-        await callback.message.reply_photo(photo=card['photo_id'], caption=f"👤 <b>{card['name']}</b>\n💰 <b>+{reward}</b> ⭐")
-        await callback.answer("Успешно!")
-    finally:
-        cur.close()
-        conn.close()
-
 @dp.message(F.text == "ТОП-10 📊")
 async def show_top(message: types.Message):
     conn = get_db_connection()
@@ -192,8 +197,6 @@ async def show_top(message: types.Message):
     finally:
         cur.close()
         conn.close()
-
-# --- АДМИН ПАНЕЛЬ ---
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
@@ -210,13 +213,11 @@ async def add_player(message: types.Message):
     try:
         data = message.text.replace("/add_player ", "").split(", ")
         name, rating, pos, club = data[0].strip(), int(data[1].strip()), data[2].strip(), data[3].strip()
-        
         if rating == 99: rtype, rlabel = "legend", "Legend ✨"
         elif rating == 95: rtype, rlabel = "ivents", "Ivents 🎊"
         elif rating >= 90: rtype, rlabel = "brilliant", "Brilliant 💎"
         elif rating >= 75: rtype, rlabel = "gold", "Gold 🥇"
         else: rtype, rlabel = "bronze", "Bronze 🥉"
-        
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("INSERT INTO all_cards (name, rating, position, rarity, rarity_type, club, photo_id) VALUES (%s,%s,%s,%s,%s,%s,%s)", 
@@ -228,10 +229,7 @@ async def add_player(message: types.Message):
         del temp_photo_buffer[ADMIN_ID]
     except: await message.answer("❌ Формат: Имя, Рейтинг, Поз, Клуб")
 
-# --- ЗАПУСК ---
-
 async def main():
-    # КРИТИЧЕСКИ ВАЖНО ДЛЯ RAILWAY: Сброс вебхука и очереди
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
