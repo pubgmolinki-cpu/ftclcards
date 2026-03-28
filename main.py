@@ -127,16 +127,17 @@ async def view_collection(callback: types.CallbackQuery):
 @dp.message(F.text == "Магазин 🛒")
 async def open_shop(message: types.Message):
     kb = InlineKeyboardBuilder()
-    kb.button(text="📦 Bronze (1000⭐)", callback_data="buy_bronze")
-    kb.button(text="📦 Gold (1850⭐)", callback_data="buy_gold")
-    kb.button(text="📦 Brilliant (2500⭐)", callback_data="buy_brilliant")
+    kb.button(text="📦 Bronze (2000⭐)", callback_data="buy_bronze")
+    kb.button(text="📦 Gold (2850⭐)", callback_data="buy_gold")
+    kb.button(text="📦 Brilliant (3500⭐)", callback_data="buy_brilliant")
     kb.adjust(1)
     await message.answer("🛒 <b>Магазин паков</b>", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_pack(callback: types.CallbackQuery):
     pack = callback.data.split("_")[1]
-    costs = {"bronze": 1000, "gold": 1850, "brilliant": 2500}
+    # ЦЕНЫ УВЕЛИЧЕНЫ НА 1000⭐
+    costs = {"bronze": 2000, "gold": 2850, "brilliant": 3500}
     cost = costs[pack]
     conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("SELECT balance FROM users WHERE user_id = %s", (callback.from_user.id,))
