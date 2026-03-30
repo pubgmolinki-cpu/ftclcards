@@ -13,7 +13,10 @@ TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 1866813859))
 PORT = int(os.getenv("PORT", 8080))
-CHANNEL_ID = "@ftclcardschannel"
+
+# Каналы для обязательной подписки
+CHANNELS = ["@ftclcardschannel", "@Dempik_lega"]
+
 VIP_PRICE = 15000
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -21,10 +24,10 @@ bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
 
 # Словари для КД и временных данных
-cooldowns = {}          # КД на получение карты
-penalty_cooldowns = {}  # КД на игру Пенальти (1 час)
-temp_photo_buffer = {}  # Буфер для админки
-waiting_for_bet = {}    # Ожидание ввода ставки
+cooldowns = {}          
+penalty_cooldowns = {}  
+temp_photo_buffer = {}  
+waiting_for_bet = {}    
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
@@ -32,12 +35,16 @@ def get_db_connection():
 def get_now_msk():
     return datetime.now(MOSCOW_TZ)
 
-# --- ПРОВЕРКА ПОДПИСКИ ---
+# --- ПРОВЕРКА ПОДПИСКИ (НА 2 КАНАЛА) ---
 async def check_subscription(user_id):
-    try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        return member.status in ["member", "administrator", "creator"]
-    except: return False
+    for channel in CHANNELS:
+        try:
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                return False
+        except Exception:
+            return False
+    return True
 
 # --- ЛОГИКА VIP ---
 def get_vip_info(user_id):
@@ -53,7 +60,7 @@ def get_vip_info(user_id):
         return False, None
     finally: cur.close(); conn.close()
 
-# --- ВЕБ-СЕРВЕР ДЛЯ UPTIMEROBOT ---
+# --- ВЕБ-СЕРВЕР ---
 async def handle(request):
     return web.Response(text="Bot is running! ⚽️", content_type='text/html')
 
@@ -62,7 +69,7 @@ async def start_webserver():
     runner = web.AppRunner(app); await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT); await site.start()
 
-# --- ЛОГИКА ВЫПАДЕНИЯ КАРТ ---
+# --- ЛОГИКА КАРТ ---
 def get_stars_by_rating(rating):
     if rating >= 99: return 10000 
     if rating >= 95: return 5000  
@@ -87,7 +94,7 @@ def get_card(rarity_filter=None):
         return cur.fetchone()
     finally: cur.close(); conn.close()
 
-# --- ОСНОВНЫЕ ХЕНДЛЕРЫ ---
+# --- ХЕНДЛЕРЫ ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject):
@@ -112,7 +119,7 @@ async def cmd_start(message: types.Message, command: CommandObject):
     kb.adjust(2, 2, 2)
     await message.answer("⚽️ <b>FTCL Cards приветствует тебя!</b>", reply_markup=kb.as_markup(resize_keyboard=True))
 
-# --- МИНИ-ИГРА ПЕНАЛЬТИ (КД 1 ЧАС) ---
+# --- ПЕНАЛЬТИ (КД 1 ЧАС) ---
 
 @dp.message(F.text == "Мини-Игры ⚽")
 async def games_menu(message: types.Message):
@@ -125,7 +132,6 @@ async def penalty_ask_bet(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     now = time.time()
     
-    # Проверка КД (3600 секунд = 1 час)
     if user_id in penalty_cooldowns and now - penalty_cooldowns[user_id] < 3600:
         rem = int(3600 - (now - penalty_cooldowns[user_id]))
         return await callback.answer(f"⏳ Перерыв! Можно будет сыграть через {rem // 60} мин.", show_alert=True)
@@ -167,9 +173,8 @@ async def penalty_result(callback: types.CallbackQuery):
     data = callback.data.split("_")
     side, bet = data[1], int(data[2])
     user_id = callback.from_user.id
-    
     gk_side = random.choice(["L", "C", "R"])
-    penalty_cooldowns[user_id] = time.time() # Устанавливаем КД после удара
+    penalty_cooldowns[user_id] = time.time() 
     
     if side == gk_side:
         res = "❌ <b>ВРАТАРЬ ОТБИЛ!</b>\n\nСтавка сгорела. Приходи через час за реваншем!"
@@ -179,17 +184,24 @@ async def penalty_result(callback: types.CallbackQuery):
         conn = get_db_connection(); cur = conn.cursor()
         cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (win, user_id))
         conn.commit(); cur.close(); conn.close()
-    
     await callback.message.edit_text(res)
 
-# --- ПОЛУЧЕНИЕ КАРТЫ ---
+# --- ПОЛУЧЕНИЕ КАРТЫ (ПРОВЕРКА 2 КАНАЛОВ) ---
 
 @dp.message((F.text == "Получить Карту 🏆") | (F.text.casefold() == "фтклкарта"))
 async def give_card_free(message: types.Message):
     user_id = message.from_user.id
+    
+    # Проверка подписки на все каналы
     if not await check_subscription(user_id):
-        return await message.answer(f"❌ <b>Подпишись на канал!</b>\n\nБез подписки играть нельзя:\n{CHANNEL_ID}",
-            reply_markup=InlineKeyboardBuilder().button(text="Подписаться 📢", url="https://t.me/ftclcardschannel").as_markup())
+        kb = InlineKeyboardBuilder()
+        kb.button(text="Канал 1 📢", url="https://t.me/ftclcardschannel")
+        kb.button(text="Канал 2 📢", url="https://t.me/Dempik_lega")
+        kb.adjust(1)
+        return await message.answer(
+            f"❌ <b>Доступ ограничен!</b>\n\nДля игры необходимо быть подписанным на <b>оба канала</b>:",
+            reply_markup=kb.as_markup()
+        )
     
     is_vip, until = get_vip_info(user_id)
     limit = 7200 if is_vip else 14400 
