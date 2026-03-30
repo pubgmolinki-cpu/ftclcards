@@ -89,7 +89,7 @@ def get_card(rarity_filter=None):
         return cur.fetchone()
     finally: cur.close(); conn.close()
 
-# --- ОСНОВНЫЕ ХЕНДЛЕРЫ ---
+# --- СТАРТ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject):
     user_id = message.from_user.id; ref_id = command.args
@@ -124,16 +124,16 @@ async def penalty_ask_bet(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if user_id in penalty_cooldowns and time.time() - penalty_cooldowns[user_id] < 3600:
         rem = int(3600 - (time.time() - penalty_cooldowns[user_id]))
-        return await callback.answer(f"⏳ Перерыв! Осталось {rem // 60} мин.", show_alert=True)
+        return await callback.answer(f"⏳ КД! Осталось {rem // 60} мин.", show_alert=True)
     waiting_for_bet[user_id] = True
-    await callback.message.edit_text("💰 <b>Введите сумму ставки (1 000 - 100 000 ⭐):</b>")
+    await callback.message.edit_text("💰 <b>Введите сумму ставки (1к - 100к ⭐):</b>")
 
 @dp.message(lambda message: waiting_for_bet.get(message.from_user.id))
 async def penalty_process_bet(message: types.Message):
     user_id = message.from_user.id
     if not message.text.isdigit(): return await message.answer("❌ Введите число.")
     bet = int(message.text)
-    if bet < 1000 or bet > 100000: return await message.answer("❌ Лимит 1к - 100к.")
+    if bet < 1000 or bet > 100000: return await message.answer("❌ Лимит 1 000 - 100 000.")
     
     conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
@@ -147,11 +147,9 @@ async def penalty_process_bet(message: types.Message):
     waiting_for_bet.pop(user_id, None)
     
     kb = InlineKeyboardBuilder()
-    kb.button(text="Лево ⬅️", callback_data=f"kick_L_{bet}")
-    kb.button(text="Центр ⬆️", callback_data=f"kick_C_{bet}")
-    kb.button(text="Право ➡️", callback_data=f"kick_R_{bet}")
+    kb.button(text="Лево ⬅️", callback_data=f"kick_L_{bet}"); kb.button(text="Центр ⬆️", callback_data=f"kick_C_{bet}"); kb.button(text="Право ➡️", callback_data=f"kick_R_{bet}")
     kb.adjust(3)
-    await message.answer(f"🥅 <b>Ставка {bet} ⭐ принята. Бьем!</b>", reply_markup=kb.as_markup())
+    await message.answer(f"🥅 <b>Ставка {bet} ⭐. Бьем!</b>", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("kick_"))
 async def penalty_result(callback: types.CallbackQuery):
@@ -164,10 +162,10 @@ async def penalty_result(callback: types.CallbackQuery):
     penalty_cooldowns[user_id] = time.time() 
     
     if side in gk_covers:
-        res = f"❌ <b>ОТБИТО!</b>\n\nВратарь закрыл: <b>{', '.join(covered_names)}</b>.\nСтавка сгорела!"
+        res = f"❌ <b>ВРАТАРЬ ОТБИЛ!</b>\n\nОн закрыл: <b>{', '.join(covered_names)}</b>.\nМинус {bet} ⭐"
     else:
         win = bet * 2
-        res = f"⚽️ <b>ГООООЛ!</b>\n\nВы пробили туда, где не было вратаря! +<b>{win} ⭐</b>"
+        res = f"⚽️ <b>ГООООЛ!</b>\n\nВратарь не угадал! Выигрыш: <b>{win} ⭐</b>"
         conn = get_db_connection(); cur = conn.cursor()
         cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (win, user_id))
         conn.commit(); cur.close(); conn.close()
@@ -213,12 +211,12 @@ async def process_buy(callback: types.CallbackQuery):
     cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
     u = cur.fetchone()
     if action == "vip":
-        iv, _ = get_vip_info(user_id); cost = VIP_PRICE
-        if iv: return await callback.answer("VIP активен!", show_alert=True)
-        if u['balance'] < cost: return await callback.answer("Мало ⭐", show_alert=True)
+        iv, _ = get_vip_info(user_id)
+        if iv: return await callback.answer("VIP уже есть!", show_alert=True)
+        if u['balance'] < VIP_PRICE: return await callback.answer("Мало ⭐", show_alert=True)
         exp = get_now_msk() + timedelta(hours=24)
-        cur.execute("UPDATE users SET balance = balance - %s, vip_until = %s WHERE user_id = %s", (cost, exp, user_id))
-        conn.commit(); await callback.message.answer(f"🚀 VIP до {exp.strftime('%H:%M')} завтра!")
+        cur.execute("UPDATE users SET balance = balance - %s, vip_until = %s WHERE user_id = %s", (VIP_PRICE, exp, user_id))
+        conn.commit(); await callback.message.answer(f"🚀 VIP активирован!")
     else:
         costs = {"bronze": 4000, "gold": 5700, "brilliant": 7000}
         cost = costs[action]
@@ -240,6 +238,12 @@ async def profile(message: types.Message):
     await message.reply(f"👤 <b>@{message.from_user.username}</b>\n💰 Баланс: <b>{u['balance'] if u else 0}</b> ⭐\n🗂 Карт: <b>{cnt}</b>\n⚡️ VIP: <b>{v_st}</b>", reply_markup=InlineKeyboardBuilder().button(text="Коллекция 🗂", callback_data="show_collection").as_markup())
     cur.close(); conn.close()
 
+@dp.message(F.text == "Реферальная Система 👥")
+async def ref_system(message: types.Message):
+    me = await bot.get_me()
+    link = f"https://t.me/{me.username}?start={message.from_user.id}"
+    await message.answer(f"👥 <b>Приглашай друзей!</b>\n\nЗа каждого новичка даем <b>1500 ⭐</b>.\n\nТвоя ссылка (нажми, чтобы скопировать):\n<code>{link}</code>")
+
 @dp.message(F.text == "ТОП-10 📊")
 async def show_top(message: types.Message):
     conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
@@ -256,10 +260,8 @@ async def cmd_reset_progress(message: types.Message):
     try:
         cur.execute("TRUNCATE TABLE user_cards RESTART IDENTITY;")
         cur.execute("UPDATE users SET balance = 0, vip_until = NULL;")
-        conn.commit()
-        await message.answer("⚠️ <b>ПРОГРЕСС ВСЕХ ИГРОКОВ СБРОШЕН!</b>\nКоллекции удалены, балансы обнулены.")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка сброса: {e}")
+        conn.commit(); await message.answer("⚠️ <b>ПРОГРЕСС ВСЕХ СБРОШЕН!</b>")
+    except: await message.answer("❌ Ошибка!")
     finally: cur.close(); conn.close()
 
 @dp.message(F.photo & (F.from_user.id == ADMIN_ID))
@@ -281,7 +283,7 @@ async def add_player(message: types.Message):
         cur.execute("INSERT INTO all_cards (name, rating, position, rarity, rarity_type, club, photo_id) VALUES (%s,%s,%s,%s,%s,%s,%s)", (name, rat, pos, rl, rt, club, p_id))
         conn.commit(); cur.close(); conn.close()
         await message.answer(f"✅ Добавлен: {name}"); del temp_photo_buffer[ADMIN_ID]
-    except: await message.answer("❌ Ошибка формата!")
+    except: await message.answer("❌ Ошибка!")
 
 async def main():
     asyncio.create_task(start_webserver())
