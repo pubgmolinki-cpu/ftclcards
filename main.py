@@ -238,34 +238,62 @@ async def penalty_result(callback: types.CallbackQuery):
         conn.commit(); cur.close(); conn.close()
     await callback.message.edit_text(res)
 
-# --- КАРТЫ ---
+# --- КАРТЫ С АНИМАЦИЕЙ ---
 
 @dp.message((F.text == "Получить Карту 🏆") | (F.text.casefold() == "фтклкарта"))
 async def give_card_free(message: types.Message):
     user_id = message.from_user.id
+    
+    # 1. Проверка подписки
     if not await check_subscription(user_id):
         kb = InlineKeyboardBuilder()
         for ch in CHANNELS:
             kb.button(text=f"Подписаться на {ch}", url=f"https://t.me/{ch.replace('@','')}")
         return await message.answer("❌ <b>Подпишись на каналы!</b>", reply_markup=kb.adjust(1).as_markup())
     
+    # 2. Проверка КД
     is_vip, _ = get_vip_info(user_id)
     limit = 7200 if is_vip else 14400 
     if user_id in cooldowns and time.time() - cooldowns[user_id] < limit:
         rem = int(limit - (time.time() - cooldowns[user_id]))
         return await message.reply(f"⏳ Жди {rem//3600}ч. {(rem%3600)//60}мин.")
     
+    # 3. Выбор карты
     card = get_card()
     if not card: return await message.reply("⚠️ База пуста.")
+    
+    # Сохраняем в БД сразу (чтобы не было абуза)
     reward = get_stars_by_rating(card['rating'])
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (reward, user_id))
     cur.execute("INSERT INTO user_cards (user_id, card_id) VALUES (%s, %s)", (user_id, card['id']))
     conn.commit(); cooldowns[user_id] = time.time()
-    
-    cap = f"<b>КАРТА 🎉</b>\n\n👤 {html.escape(card['name'])}\n📊 {card['rating']}\n🛡 {html.escape(card['club'])}\n💰 +{reward} ⭐"
-    await message.reply_photo(photo=card['photo_id'], caption=cap)
     cur.close(); conn.close()
+    
+    # 4. АНИМАЦИЯ ИНТРИГИ
+    status_msg = await message.answer("Открываем пак... 💼")
+    await asyncio.sleep(4)
+    
+    pos_txt = html.escape(card['position'] or "???")
+    await status_msg.edit_text(f"Позиция: <b>{pos_txt}</b> ⚽...")
+    await asyncio.sleep(4)
+    
+    club_txt = html.escape(card['club'] or "???")
+    await status_msg.edit_text(f"Позиция: <b>{pos_txt}</b> ⚽\nКлуб: <b>{club_txt}</b> 🛡....")
+    await asyncio.sleep(4)
+    
+    await status_msg.edit_text(f"Позиция: <b>{pos_txt}</b> ⚽\nКлуб: <b>{club_txt}</b> 🛡\nРейтинг: <b>{card['rating']}</b> ⭐!!!")
+    await asyncio.sleep(2)
+    
+    # 5. ФИНАЛЬНАЯ ВЫДАЧА
+    await status_msg.delete()
+    cap = (f"<b>КАРТА 🎉</b>\n\n"
+           f"👤 {html.escape(card['name'])}\n"
+           f"📊 Рейтинг: {card['rating']}\n"
+           f"🛡 Клуб: {club_txt}\n"
+           f"🏃 Позиция: {pos_txt}\n"
+           f"💰 Награда: +{reward} ⭐")
+    await message.reply_photo(photo=card['photo_id'], caption=cap)
 
 # --- ПРОФИЛЬ, ТОП, РЕФЕРАЛЫ ---
 
