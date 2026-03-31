@@ -88,7 +88,8 @@ def get_card(rarity_filter=None):
         return cur.fetchone()
     finally: cur.close(); conn.close()
 
-# --- ОСНОВНЫЕ ХЕНДЛЕРЫ ---
+# --- ХЕНДЛЕРЫ МЕНЮ ---
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject):
     user_id = message.from_user.id; ref_id = command.args
@@ -112,6 +113,54 @@ async def cmd_start(message: types.Message, command: CommandObject):
     kb.adjust(2, 2, 2)
     await message.answer("⚽️ <b>FTCL Cards приветствует тебя!</b>", reply_markup=kb.as_markup(resize_keyboard=True))
 
+# --- МАГАЗИН ---
+
+@dp.message(F.text == "Магазин 🛒")
+async def open_shop(message: types.Message):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📦 Bronze (4к)", callback_data="buy_bronze")
+    kb.button(text="📦 Gold (5.7к)", callback_data="buy_gold")
+    kb.button(text="📦 Brilliant (7к)", callback_data="buy_brilliant")
+    kb.button(text=f"⚡️ VIP 24ч ({VIP_PRICE}⭐)", callback_data="buy_vip")
+    kb.adjust(1)
+    await message.answer("🛒 <b>Магазин паков и статусов</b>\nЗдесь ты можешь потратить свои ⭐", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("buy_"))
+async def process_buy(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    action = callback.data.split("_")[1]
+    conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
+    
+    cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
+    u = cur.fetchone()
+    
+    if action == "vip":
+        is_v, _ = get_vip_info(user_id)
+        if is_v: return await callback.answer("VIP уже активен!", show_alert=True)
+        if u['balance'] < VIP_PRICE: return await callback.answer("Недостаточно звезд!", show_alert=True)
+        
+        exp = get_now_msk() + timedelta(hours=24)
+        cur.execute("UPDATE users SET balance = balance - %s, vip_until = %s WHERE user_id = %s", (VIP_PRICE, exp, user_id))
+        conn.commit()
+        await callback.message.answer(f"🚀 <b>VIP активирован на 24 часа!</b>\nТеперь КД на карты в 2 раза меньше.")
+    else:
+        prices = {"bronze": 4000, "gold": 5700, "brilliant": 7000}
+        cost = prices[action]
+        if u['balance'] < cost: return await callback.answer("Недостаточно звезд!", show_alert=True)
+        
+        card = get_card(action)
+        if not card: return await callback.answer("В этой категории пока нет карт.", show_alert=True)
+        
+        reward = get_stars_by_rating(card['rating'])
+        cur.execute("UPDATE users SET balance = balance - %s + %s WHERE user_id = %s", (cost, reward, user_id))
+        cur.execute("INSERT INTO user_cards (user_id, card_id) VALUES (%s, %s)", (user_id, card['id']))
+        conn.commit()
+        
+        await callback.message.reply_photo(photo=card['photo_id'], caption=f"📦 <b>Пак открыт!</b>\n\n👤 {card['name']}\n📊 {card['rating']}\n💰 Кэшбек: +{reward} ⭐")
+    
+    cur.close(); conn.close()
+    await callback.answer()
+
 # --- МИНИ-ИГРЫ И ПЕНАЛЬТИ ---
 
 @dp.message(F.text == "Мини-Игры ⚽")
@@ -128,29 +177,27 @@ async def penalty_ask_bet(callback: types.CallbackQuery):
         return await callback.answer(f"⏳ КД! Осталось {rem // 60} мин.", show_alert=True)
     
     waiting_for_bet[user_id] = True
-    kb = InlineKeyboardBuilder()
-    kb.button(text="Назад 🔙", callback_data="cancel_penalty")
+    kb = InlineKeyboardBuilder().button(text="Назад 🔙", callback_data="cancel_penalty")
     await callback.message.edit_text("💰 <b>Введите сумму ставки (1к - 100к ⭐):</b>", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data == "cancel_penalty")
 async def cancel_penalty_bet(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    waiting_for_bet.pop(user_id, None) # Убираем режим ожидания ставки
-    await games_menu(callback.message) # Возвращаем в меню игр
+    waiting_for_bet.pop(callback.from_user.id, None)
+    await games_menu(callback.message)
 
 @dp.message(lambda message: waiting_for_bet.get(message.from_user.id))
 async def penalty_process_bet(message: types.Message):
     user_id = message.from_user.id
-    if not message.text.isdigit(): return await message.answer("❌ Введите число ставку.")
+    if not message.text.isdigit(): return await message.answer("❌ Введите число.")
     bet = int(message.text)
-    if bet < 1000 or bet > 100000: return await message.answer("❌ Лимит 1 000 - 100 000 ⭐.")
+    if bet < 1000 or bet > 100000: return await message.answer("❌ Лимит 1к - 100к.")
     
     conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
     u = cur.fetchone()
     if not u or u['balance'] < bet:
         waiting_for_bet.pop(user_id, None)
-        return await message.answer("❌ Недостаточно ⭐ на балансе.")
+        return await message.answer("❌ Недостаточно ⭐")
     
     cur.execute("UPDATE users SET balance = balance - %s WHERE user_id = %s", (bet, user_id))
     conn.commit(); cur.close(); conn.close()
@@ -162,39 +209,36 @@ async def penalty_process_bet(message: types.Message):
     kb.button(text="Право ➡️", callback_data=f"kick_R_{bet}")
     kb.button(text="Отмена (Вернуть ⭐) ❌", callback_data=f"refund_penalty_{bet}")
     kb.adjust(3, 1)
-    await message.answer(f"🥅 <b>Ставка {bet} ⭐ принята. Куда бьем?</b>", reply_markup=kb.as_markup())
+    await message.answer(f"🥅 <b>Ставка {bet} ⭐. Куда бьем?</b>", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("refund_penalty_"))
 async def refund_penalty(callback: types.CallbackQuery):
     bet = int(callback.data.split("_")[2])
-    user_id = callback.from_user.id
     conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (bet, user_id))
+    cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (bet, callback.from_user.id))
     conn.commit(); cur.close(); conn.close()
-    await callback.message.edit_text("✅ Ставка отменена, звезды возвращены.")
+    await callback.message.edit_text("✅ Ставка отменена.")
     await games_menu(callback.message)
 
 @dp.callback_query(F.data.startswith("kick_"))
 async def penalty_result(callback: types.CallbackQuery):
     data = callback.data.split("_")
     side, bet = data[1], int(data[2])
-    user_id = callback.from_user.id
     directions = {"L": "Лево ⬅️", "C": "Центр ⬆️", "R": "Право ➡️"}
     gk_covers = random.sample(list(directions.keys()), 2)
-    covered_names = [directions[k] for k in gk_covers]
-    penalty_cooldowns[user_id] = time.time() 
+    penalty_cooldowns[callback.from_user.id] = time.time() 
     
     if side in gk_covers:
-        res = f"❌ <b>ОТБИТО!</b>\n\nВратарь закрыл: <b>{', '.join(covered_names)}</b>.\nМинус {bet} ⭐"
+        res = f"❌ <b>ОТБИТО!</b> Вратарь закрыл эту зону."
     else:
         win = bet * 2
-        res = f"⚽️ <b>ГООООЛ!</b>\n\nВратарь не угадал! Выигрыш: <b>{win} ⭐</b>"
+        res = f"⚽️ <b>ГООООЛ! +{win} ⭐</b>"
         conn = get_db_connection(); cur = conn.cursor()
-        cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (win, user_id))
+        cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (win, callback.from_user.id))
         conn.commit(); cur.close(); conn.close()
     await callback.message.edit_text(res)
 
-# --- ОСТАЛЬНЫЕ ФУНКЦИИ ---
+# --- КАРТЫ ---
 
 @dp.message((F.text == "Получить Карту 🏆") | (F.text.casefold() == "фтклкарта"))
 async def give_card_free(message: types.Message):
@@ -203,9 +247,9 @@ async def give_card_free(message: types.Message):
         kb = InlineKeyboardBuilder()
         for ch in CHANNELS:
             kb.button(text=f"Подписаться на {ch}", url=f"https://t.me/{ch.replace('@','')}")
-        return await message.answer("❌ <b>Подпишись на все каналы!</b>", reply_markup=kb.adjust(1).as_markup())
+        return await message.answer("❌ <b>Подпишись на каналы!</b>", reply_markup=kb.adjust(1).as_markup())
     
-    is_vip, until = get_vip_info(user_id)
+    is_vip, _ = get_vip_info(user_id)
     limit = 7200 if is_vip else 14400 
     if user_id in cooldowns and time.time() - cooldowns[user_id] < limit:
         rem = int(limit - (time.time() - cooldowns[user_id]))
@@ -219,10 +263,11 @@ async def give_card_free(message: types.Message):
     cur.execute("INSERT INTO user_cards (user_id, card_id) VALUES (%s, %s)", (user_id, card['id']))
     conn.commit(); cooldowns[user_id] = time.time()
     
-    tag = f"⚡️ VIP (до {until.strftime('%H:%M')})" if is_vip else "👤 Игрок"
-    cap = f"<b>КАРТА 🎉</b>\n\n👤 <b>{html.escape(card['name'])}</b>\n📊 {card['rating']}\n🛡 {html.escape(card['club'])}\n💰 <b>+{reward}</b> ⭐\n\n📋 {tag}"
+    cap = f"<b>КАРТА 🎉</b>\n\n👤 {html.escape(card['name'])}\n📊 {card['rating']}\n🛡 {html.escape(card['club'])}\n💰 +{reward} ⭐"
     await message.reply_photo(photo=card['photo_id'], caption=cap)
     cur.close(); conn.close()
+
+# --- ПРОФИЛЬ, ТОП, РЕФЕРАЛЫ ---
 
 @dp.message(F.text == "Профиль 👤")
 async def profile(message: types.Message):
@@ -231,7 +276,8 @@ async def profile(message: types.Message):
     u = cur.fetchone()
     cur.execute("SELECT COUNT(*) FROM user_cards WHERE user_id=%s", (message.from_user.id,))
     cnt = cur.fetchone()[0]
-    v_st = "✅" if u and u['vip_until'] and (u['vip_until'].replace(tzinfo=MOSCOW_TZ) if u['vip_until'].tzinfo is None else u['vip_until']) > get_now_msk() else "❌"
+    is_v, _ = get_vip_info(message.from_user.id)
+    v_st = "✅" if is_v else "❌"
     await message.reply(f"👤 <b>@{message.from_user.username}</b>\n💰 Баланс: <b>{u['balance'] if u else 0}</b> ⭐\n🗂 Карт: <b>{cnt}</b>\n⚡️ VIP: <b>{v_st}</b>")
     cur.close(); conn.close()
 
@@ -239,14 +285,14 @@ async def profile(message: types.Message):
 async def ref_system(message: types.Message):
     me = await bot.get_me()
     link = f"https://t.me/{me.username}?start={message.from_user.id}"
-    await message.answer(f"👥 <b>Рефералы</b>\nСсылка:\n<code>{link}</code>")
+    await message.answer(f"👥 <b>Рефералы</b>\nПриглашай друзей и получай 1500 ⭐ за каждого!\n\nТвоя ссылка:\n<code>{link}</code>")
 
 @dp.message(F.text == "ТОП-10 📊")
 async def show_top(message: types.Message):
     conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("SELECT username, balance FROM users ORDER BY balance DESC LIMIT 10")
     top = cur.fetchall(); cur.close(); conn.close()
-    await message.answer("📊 <b>Топ:</b>\n\n" + "\n".join([f"{i}. {u['username']} — {u['balance']}⭐" for i, u in enumerate(top, 1)]))
+    await message.answer("📊 <b>Топ богатых игроков:</b>\n\n" + "\n".join([f"{i}. {u['username']} — {u['balance']}⭐" for i, u in enumerate(top, 1)]))
 
 # --- АДМИНКА ---
 
@@ -255,18 +301,18 @@ async def cmd_reset_progress(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("TRUNCATE TABLE user_cards RESTART IDENTITY; UPDATE users SET balance = 0, vip_until = NULL;")
-    conn.commit(); await message.answer("⚠️ Данные сброшены!"); cur.close(); conn.close()
+    conn.commit(); await message.answer("⚠️ База полностью очищена!"); cur.close(); conn.close()
 
 @dp.message(F.photo & (F.from_user.id == ADMIN_ID))
 async def handle_photo(message: types.Message):
     temp_photo_buffer[ADMIN_ID] = max(message.photo, key=lambda p: p.file_size).file_id
-    await message.reply("📸 Фото в буфере. Пиши: `/add_player Имя, Рейтинг, Поз, Клуб`")
+    await message.reply("📸 Фото принято. Жду: `/add_player Имя, Рейтинг, Поз, Клуб`")
 
 @dp.message(Command("add_player"))
 async def add_player(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     p_id = temp_photo_buffer.get(ADMIN_ID)
-    if not p_id: return await message.reply("❌ Нет фото!")
+    if not p_id: return await message.reply("❌ Сначала скинь фото!")
     try:
         args = message.text.replace("/add_player ", "").split(",")
         name, rat, pos, club = args[0].strip(), int(args[1].strip()), args[2].strip(), args[3].strip()
@@ -275,8 +321,8 @@ async def add_player(message: types.Message):
         cur.execute("INSERT INTO all_cards (name, rating, position, rarity, rarity_type, club, photo_id) VALUES (%s,%s,%s,%s,%s,%s,%s)", 
                      (name, rat, pos, rt.capitalize(), rt, club, p_id))
         conn.commit(); cur.close(); conn.close()
-        await message.answer(f"✅ Добавлен: {name}"); del temp_photo_buffer[ADMIN_ID]
-    except: await message.answer("❌ Ошибка формата!")
+        await message.answer(f"✅ Игрок {name} добавлен!"); del temp_photo_buffer[ADMIN_ID]
+    except: await message.answer("❌ Ошибка! Формат: `Имя, Рейтинг, Поз, Клуб`")
 
 async def main():
     asyncio.create_task(start_webserver())
