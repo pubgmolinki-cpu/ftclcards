@@ -26,6 +26,14 @@ penalty_cooldowns = {}
 temp_photo_buffer = {}  
 waiting_for_bet = {}    
 
+# Словарь сокращений позиций
+POSITIONS_MAP = {
+    "Вратарь": "ВРТ",
+    "Защитник": "ЗАЩ",
+    "Полузащитник": "ПЗЩ",
+    "Нападающий": "НАП"
+}
+
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
@@ -243,26 +251,21 @@ async def penalty_result(callback: types.CallbackQuery):
 @dp.message((F.text == "Получить Карту 🏆") | (F.text.casefold() == "фтклкарта"))
 async def give_card_free(message: types.Message):
     user_id = message.from_user.id
-    
-    # 1. Проверка подписки
     if not await check_subscription(user_id):
         kb = InlineKeyboardBuilder()
         for ch in CHANNELS:
             kb.button(text=f"Подписаться на {ch}", url=f"https://t.me/{ch.replace('@','')}")
         return await message.answer("❌ <b>Подпишись на каналы!</b>", reply_markup=kb.adjust(1).as_markup())
     
-    # 2. Проверка КД
     is_vip, _ = get_vip_info(user_id)
     limit = 7200 if is_vip else 14400 
     if user_id in cooldowns and time.time() - cooldowns[user_id] < limit:
         rem = int(limit - (time.time() - cooldowns[user_id]))
         return await message.reply(f"⏳ Жди {rem//3600}ч. {(rem%3600)//60}мин.")
     
-    # 3. Выбор карты
     card = get_card()
     if not card: return await message.reply("⚠️ База пуста.")
     
-    # Сохраняем в БД сразу (чтобы не было абуза)
     reward = get_stars_by_rating(card['rating'])
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (reward, user_id))
@@ -270,7 +273,6 @@ async def give_card_free(message: types.Message):
     conn.commit(); cooldowns[user_id] = time.time()
     cur.close(); conn.close()
     
-    # 4. АНИМАЦИЯ ИНТРИГИ
     status_msg = await message.answer("Открываем пак... 💼")
     await asyncio.sleep(4)
     
@@ -285,7 +287,6 @@ async def give_card_free(message: types.Message):
     await status_msg.edit_text(f"Позиция: <b>{pos_txt}</b> ⚽\nКлуб: <b>{club_txt}</b> 🛡\nРейтинг: <b>{card['rating']}</b> ⭐!!!")
     await asyncio.sleep(2)
     
-    # 5. ФИНАЛЬНАЯ ВЫДАЧА
     await status_msg.delete()
     cap = (f"<b>КАРТА 🎉</b>\n\n"
            f"👤 {html.escape(card['name'])}\n"
@@ -295,7 +296,7 @@ async def give_card_free(message: types.Message):
            f"💰 Награда: +{reward} ⭐")
     await message.reply_photo(photo=card['photo_id'], caption=cap)
 
-# --- ПРОФИЛЬ, ТОП, РЕФЕРАЛЫ ---
+# --- ПРОФИЛЬ И КОЛЛЕКЦИЯ ---
 
 @dp.message(F.text == "Профиль 👤")
 async def profile(message: types.Message):
@@ -306,8 +307,56 @@ async def profile(message: types.Message):
     cnt = cur.fetchone()[0]
     is_v, _ = get_vip_info(message.from_user.id)
     v_st = "✅" if is_v else "❌"
-    await message.reply(f"👤 <b>@{message.from_user.username}</b>\n💰 Баланс: <b>{u['balance'] if u else 0}</b> ⭐\n🗂 Карт: <b>{cnt}</b>\n⚡️ VIP: <b>{v_st}</b>")
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Посмотреть Коллекцию 📑", callback_data="view_collection")
+    
+    await message.reply(
+        f"👤 <b>@{message.from_user.username}</b>\n"
+        f"💰 Баланс: <b>{u['balance'] if u else 0}</b> ⭐\n"
+        f"🗂 Карт: <b>{cnt}</b>\n"
+        f"⚡️ VIP: <b>{v_st}</b>",
+        reply_markup=kb.as_markup()
+    )
     cur.close(); conn.close()
+
+@dp.callback_query(F.data == "view_collection")
+async def view_collection(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
+    
+    # Соединяем таблицы, чтобы получить данные о картах пользователя
+    cur.execute("""
+        SELECT c.name, c.rating, c.position 
+        FROM user_cards uc 
+        JOIN all_cards c ON uc.card_id = c.id 
+        WHERE uc.user_id = %s
+        ORDER BY c.rating DESC
+    """, (user_id,))
+    
+    cards = cur.fetchall()
+    cur.close(); conn.close()
+    
+    if not cards:
+        return await callback.answer("У тебя пока нет карт в коллекции!", show_alert=True)
+    
+    text = "📑 <b>Твоя коллекция карт:</b>\n\n"
+    for card in cards:
+        # Получаем сокращенную позицию
+        pos_full = card['position']
+        pos_short = POSITIONS_MAP.get(pos_full, pos_full) # Если нет в словаре, оставим как есть
+        
+        text += f"• {card['name']} ({card['rating']}, {pos_short})\n"
+    
+    # Если текста слишком много (лимит ТГ 4096 символов), можно обрезать или разделить, 
+    # но для начала выведем так:
+    try:
+        await callback.message.answer(text)
+        await callback.answer()
+    except Exception:
+        await callback.answer("Коллекция слишком большая для одного сообщения!", show_alert=True)
+
+# --- ТОП, РЕФЕРАЛЫ ---
 
 @dp.message(F.text == "Реферальная Система 👥")
 async def ref_system(message: types.Message):
