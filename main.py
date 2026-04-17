@@ -14,7 +14,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 1866813859))
 PORT = int(os.getenv("PORT", 8080))
 
-CHANNELS = ["@ftclcardschannel", "@waxteamiftl"]
+# ОБНОВЛЕННЫЙ СПИСОК КАНАЛОВ
+CHANNELS = ["@ftclcardschannel", "@waxteamiftl", "@ftcloff"]
 VIP_PRICE = 15000
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -121,7 +122,10 @@ async def cmd_start(message: types.Message, command: CommandObject):
 async def give_card_free(message: types.Message):
     user_id = message.from_user.id
     if not await check_subscription(user_id):
-        return await message.answer("❌ Подпишись на каналы проекта!")
+        kb = InlineKeyboardBuilder()
+        for ch in CHANNELS:
+            kb.button(text=f"Подписаться на {ch}", url=f"https://t.me/{ch.replace('@','')}")
+        return await message.answer("❌ <b>Чтобы играть, подпишись на все каналы:</b>", reply_markup=kb.adjust(1).as_markup())
     
     is_vip, _ = get_vip_info(user_id)
     limit = 7200 if is_vip else 14400 
