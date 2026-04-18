@@ -25,6 +25,7 @@ async def send_admin_log(text):
     try: await bot.send_message(ADMIN_ID, f"📑 <b>LOG:</b>\n{text}")
     except: pass
 
+# --- ПРОВЕРКА ПОДПИСКИ ---
 async def get_not_subscribed_channels(uid):
     not_subscribed = []
     channels_info = {
@@ -45,23 +46,21 @@ async def get_not_subscribed_channels(uid):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     uid = message.from_user.id
-    # Исправленная логика рефералки
     args = message.text.split()
     ref_id = args[1] if len(args) > 1 and args[1].isdigit() else None
     
     conn = get_db_connection(); cur = conn.cursor()
-    # Проверяем, есть ли пользователь уже в базе
     cur.execute("SELECT user_id FROM users WHERE user_id = %s", (uid,))
     is_new = cur.fetchone() is None
 
-    cur.execute("INSERT INTO users (user_id, username, referrer_id) VALUES (%s, %s, %s) "
-                "ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username", 
-                (uid, message.from_user.username, ref_id))
+    cur.execute("""
+        INSERT INTO users (user_id, username, referrer_id) VALUES (%s, %s, %s) 
+        ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username
+    """, (uid, message.from_user.username, ref_id))
     
-    # Если пользователь новый и пришел по ссылке — начисляем бонус пригласившему
     if is_new and ref_id and int(ref_id) != uid:
         cur.execute("UPDATE users SET balance = balance + 5000 WHERE user_id = %s", (int(ref_id),))
-        await send_admin_log(f"👥 Новый реферал! {uid} приглашен пользователем {ref_id}")
+        await send_admin_log(f"👥 Реферал! @{message.from_user.username} приглашен юзером {ref_id}")
     
     conn.commit(); cur.close(); conn.close()
 
@@ -71,10 +70,11 @@ async def cmd_start(message: types.Message):
     kb.button(text="Рефералка 👥"); kb.button(text="ТОП-10 📊")
     await message.answer("⚽️ <b>FTCL Cards приветствует тебя!</b>", reply_markup=kb.adjust(2).as_markup(resize_keyboard=True))
 
-# --- ПОЛУЧЕНИЕ КАРТЫ ---
+# --- ПОЛУЧЕНИЕ КАРТЫ (С ПАК ОПЕНИНГОМ) ---
 @dp.message(F.text == "Получить Карту 🏆")
 async def get_card(message: types.Message):
     uid = message.from_user.id
+    
     not_sub = await get_not_subscribed_channels(uid)
     if not_sub:
         kb = InlineKeyboardBuilder()
@@ -92,12 +92,18 @@ async def get_card(message: types.Message):
     conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("SELECT * FROM all_cards ORDER BY RANDOM() LIMIT 1")
     card = cur.fetchone()
-    
+    if not card: return await message.answer("Ошибка: Карты не найдены в базе.")
+
+    # --- ПАК ОПЕНИНГ ---
     st = await message.answer("Открываем пак... 💼")
-    await asyncio.sleep(1); await st.edit_text(f"Позиция: <b>{card['position']}</b>")
-    await asyncio.sleep(2); await st.edit_text(f"Рейтинг: <b>{card['rating']}</b>")
-    await asyncio.sleep(2); await st.edit_text(f"Клуб: <b>{card['club']}</b>")
-    await asyncio.sleep(3); await st.delete)
+    await asyncio.sleep(1)
+    await st.edit_text(f"Позиция: <b>{card['position']}</b>")
+    await asyncio.sleep(1)
+    await st.edit_text(f"Рейтинг: <b>{card['rating']}</b>")
+    await asyncio.sleep(1)
+    await st.edit_text(f"Клуб: <b>{card['club']}</b>")
+    await asyncio.sleep(1)
+    await st.delete()
 
     if uid not in user_cooldowns: user_cooldowns[uid] = {}
     user_cooldowns[uid]["pack"] = now
@@ -106,14 +112,17 @@ async def get_card(message: types.Message):
     cur.execute("INSERT INTO user_cards (user_id, card_id) VALUES (%s, %s)", (uid, card['id']))
     conn.commit(); cur.close(); conn.close()
 
+    # --- ШАБЛОН ОПИСАНИЯ КАРТЫ ---
     caption = (
-        f"<b>КАРТА</b> 🎉\n\n"
+        f"🎉 <b>ВАМ ВЫПАЛА НОВАЯ КАРТА!</b> 🎉\n\n"
         f"👤 <b>{card['name'].upper()}</b>\n"
-        f"📊 <b>{card['rating']}</b>\n"
-        f"🛡 <b>{card['club']}</b>\n"
+        f"🧾Позиция: <b>{card['position']}</b>\n"
+        f"📊 Рейтинг: <b>{card['rating']}</b>\n"
+        f"🛡 Клуб: <b>{card['club']}</b>\n"
         f"💰 <b>+1250 ⭐</b>"
     )
     await message.answer_photo(card['photo_id'], caption=caption)
+    await send_admin_log(f"👤 @{message.from_user.username} выбил {card['name']}")
 
 # --- МИНИ-ИГРЫ ---
 @dp.message(F.text == "Мини-Игры ⚽")
@@ -139,12 +148,14 @@ async def start_game(call: types.CallbackQuery):
 async def process_bet(message: types.Message):
     uid = message.from_user.id
     g_type = waiting_for_bet.pop(uid)
-    if not message.text.isdigit(): return await message.answer("❌ Числом!")
+    if not message.text.isdigit(): return await message.answer("❌ Введите число!")
     bet = int(message.text)
     
     conn = get_db_connection(); cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("SELECT balance FROM users WHERE user_id = %s", (uid,))
-    if cur.fetchone()['balance'] < bet: 
+    res = cur.fetchone()
+    if not res or res['balance'] < bet: 
+        cur.close(); conn.close()
         return await message.answer("❌ Недостаточно ⭐!")
 
     user_bets[uid] = {"bet": bet, "game": g_type}
@@ -154,7 +165,6 @@ async def process_bet(message: types.Message):
         kb.button(text="Лево ⬅️", callback_data="k_l"); kb.button(text="Центр ⬆️", callback_data="k_c"); kb.button(text="Право ➡️", callback_data="k_r")
         await message.answer(f"⚽ Ставка {bet} принята! Куда бьешь?", reply_markup=kb.as_markup())
     elif g_type == "guess":
-        # Исправленная угадайка: 4 кнопки
         cur.execute("SELECT * FROM all_cards ORDER BY RANDOM() LIMIT 4")
         cards = cur.fetchall()
         correct = cards[0]
@@ -169,13 +179,11 @@ async def process_bet(message: types.Message):
 @dp.callback_query(F.data.startswith("ans_"))
 async def res_guess(call: types.CallbackQuery):
     uid = call.from_user.id
-    if uid not in user_bets: return await call.answer("Ошибка")
+    if uid not in user_bets: return await call.answer("Ошибка сессии")
     bet = user_bets.pop(uid)['bet']
     win = call.data.split("_")[1] == 'y'
-    
     if uid not in user_cooldowns: user_cooldowns[uid] = {}
     user_cooldowns[uid]["guess"] = time.time()
-    
     conn = get_db_connection(); cur = conn.cursor()
     if win:
         cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (bet, uid))
@@ -212,7 +220,6 @@ async def profile(message: types.Message):
     await message.answer(f"👤 <b>Профиль</b>\n💰 Баланс: {u['balance']:,} ⭐", reply_markup=kb.as_markup())
     cur.close(); conn.close()
 
-# Исправленная коллекция
 @dp.callback_query(F.data == "v_coll")
 async def view_collection(call: types.CallbackQuery):
     uid = call.from_user.id
@@ -223,20 +230,14 @@ async def view_collection(call: types.CallbackQuery):
         WHERE uc.user_id = %s LIMIT 15
     """, (uid,))
     res = cur.fetchall()
-    if not res:
-        return await call.answer("Твоя коллекция пока пуста!", show_alert=True)
-    
-    txt = "💼 <b>Твои последние 15 карт:</b>\n\n"
-    for r in res: txt += f"▪️ {r[0]} ({r[1]})\n"
-    await call.message.answer(txt)
-    await call.answer()
+    if not res: return await call.answer("Коллекция пуста!", show_alert=True)
+    txt = "💼 <b>Твои карты (последние 15):</b>\n\n" + "\n".join([f"▪️ {r[0]} ({r[1]})" for r in res])
+    await call.message.answer(txt); await call.answer()
 
 @dp.message(F.text == "Рефералка 👥")
 async def reflink(message: types.Message):
     me = await bot.get_me()
-    await message.answer(f"👥 <b>Реферальная система</b>\n\n"
-                         f"Приглашай друзей и получай <b>5,000 ⭐</b> за каждого!\n\n"
-                         f"Твоя ссылка:\n<code>t.me/{me.username}?start={message.from_user.id}</code>")
+    await message.answer(f"👥 <b>Рефералка</b>\nЗа друга: 5,000 ⭐\n\nСсылка:\n<code>t.me/{me.username}?start={message.from_user.id}</code>")
 
 @dp.message(F.text == "ТОП-10 📊")
 async def show_top(message: types.Message):
