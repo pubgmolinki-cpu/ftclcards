@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TonBoxBet</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+    <div id="welcome-screen">
+        <div class="glow-text">TonBoxBet</div>
+        <p class="welcome-desc">Приветствуем тебя в нашем боте, где ты можешь ставить на матчи ФТКЛ и выигрывать TonBox Coins.</p>
+        <button class="btn-main pulse" onclick="enterApp()">Играть</button>
+    </div>
+
+    <div class="header">
+        <div class="logo">TBB</div>
+        <div class="balance-container">
+            <span id="user-balance">1000</span> <small>TBC</small>
+        </div>
+    </div>
+
+    <main>
+        <section id="matches" class="tab-content active">
+            <div class="timer-section">
+                <p id="timer-text">До закрытия линий: 00:00:00</p>
+                <div class="timer-bar"><div class="timer-fill" id="timer-fill"></div></div>
+            </div>
+            
+            <div class="tour-selector">
+                <div class="tour-chip active">1 тур ФТКЛ</div>
+                <div class="tour-chip">2 тур</div>
+                <div class="tour-chip">ЧМ 2026</div>
+            </div>
+
+            <div id="matches-list">
+                </div>
+        </section>
+
+        <section id="my-bets" class="tab-content">
+            <h3>История ставок</h3>
+            <div id="bets-history"></div>
+        </section>
+
+        <section id="info" class="tab-content">
+            <h3>Новости Лиги</h3>
+            <div id="info-content" class="info-card">Загрузка новостей...</div>
+        </section>
+
+        <section id="profile" class="tab-content">
+            <div class="profile-header">
+                <h2 id="profile-nick">Username</h2>
+            </div>
+            <div class="stats-grid">
+                <div class="stat-box"><span>Всего</span><b id="stat-total">0</b></div>
+                <div class="stat-box"><span>Удачные</span><b id="stat-win" style="color: #00ff00;">0</b></div>
+                <div class="stat-box"><span>Неудачные</span><b id="stat-lose" style="color: #ff0606;">0</b></div>
+            </div>
+            <div class="chart-container">
+                <canvas id="successChart"></canvas>
+            </div>
+        </section>
+    </main>
+
+    <nav class="bottom-nav">
+        <div class="nav-item active" onclick="switchTab('matches', this)">Матчи</div>
+        <div class="nav-item" onclick="switchTab('my-bets', this)">Ставки</div>
+        <div class="nav-item" onclick="switchTab('info', this)">Инфо</div>
+        <div class="nav-item" onclick="switchTab('profile', this)">Профиль</div>
+    </nav>
+
+    <script src="script.js"></script>
+</body>
+</html>
